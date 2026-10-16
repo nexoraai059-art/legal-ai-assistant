@@ -1,0 +1,78 @@
+{
+  "title": "Legal AI benchmark starter pack",
+  "purpose": "Small, reproducible samples for testing legal document retrieval and QA. The GitHub Actions workflow downloads samples in GitHub-hosted runners and stores them as a workflow artifact; no local download or installation is required.",
+  "sample_rows_per_dataset": 10,
+  "max_string_chars_per_field": 3000,
+  "datasets": [
+    {
+      "name": "LexGLUE — SCOTUS",
+      "id": "coastalcph/lex_glue",
+      "config": "scotus",
+      "source": "https://huggingface.co/datasets/coastalcph/lex_glue",
+      "license_note": "Check the dataset card and underlying source terms before reuse; dataset cards and component terms may differ."
+    },
+    {
+      "name": "LexGLUE — CaseHOLD",
+      "id": "coastalcph/lex_glue",
+      "config": "case_hold",
+      "source": "https://huggingface.co/datasets/coastalcph/lex_glue",
+      "license_note": "Check the dataset card and underlying source terms before reuse; dataset cards and component terms may differ."
+    },
+    {
+      "name": "LexGLUE — LEDGAR",
+      "id": "coastalcph/lex_glue",
+      "config": "ledgar",
+      "source": "https://huggingface.co/datasets/coastalcph/lex_glue",
+      "license_note": "Check the dataset card and underlying source terms before reuse; dataset cards and component terms may differ."
+    },
+    {
+      "name": "LexGLUE — EURLEX",
+      "id": "coastalcph/lex_glue",
+      "config": "eurlex",
+      "source": "https://huggingface.co/datasets/coastalcph/lex_glue",
+      "license_note": "Check the dataset card and underlying source terms before reuse; dataset cards and component terms may differ."
+    },
+    {
+      "name": "LexGLUE — Unfair ToS",
+      "id": "coastalcph/lex_glue",
+      "config": "unfair_tos",
+      "source": "https://huggingface.co/datasets/coastalcph/lex_glue",
+      "license_note": "Check the dataset card and underlying source terms before reuse; dataset cards and component terms may differ."
+    },
+    {
+      "name": "CUAD — Contract Understanding Atticus Dataset",
+      "id": "theatticusproject/cuad",
+      "config": null,
+      "source": "https://huggingface.co/datasets/theatticusproject/cuad",
+      "license_note": "Dataset card indicates CC BY 4.0; preserve attribution and check source document terms."
+    },
+    {
+      "name": "ContractNLI",
+      "id": "kiddothe2b/contract-nli",
+      "config": null,
+      "source": "https://huggingface.co/datasets/kiddothe2b/contract-nli",
+      "license_note": "Verify the current dataset card and attribution requirements before reuse."
+    },
+    {
+      "name": "LegalBench-RAG",
+      "id": "awinml/legalbench-rag",
+      "config": null,
+      "source": "https://huggingface.co/datasets/awinml/legalbench-rag",
+      "license_note": "Mixed source licenses; some MAUD source terms are not verified. Samples are for evaluation only; inspect per-source terms before redistribution or commercial use."
+    },
+    {
+      "name": "BillSum",
+      "id": "billsum",
+      "config": null,
+      "source": "https://huggingface.co/datasets/billsum",
+      "license_note": "Verify current dataset card and source terms before reuse."
+    },
+    {
+      "name": "Multi-LexSum",
+      "id": "allenai/multi_lexsum",
+      "config": null,
+      "source": "https://huggingface.co/datasets/allenai/multi_lexsum",
+      "license_note": "Mixed terms: summaries/metadata may be CC BY-NC while source documents have different terms; do not assume commercial reuse is permitted."
+    }
+  ]
+}
