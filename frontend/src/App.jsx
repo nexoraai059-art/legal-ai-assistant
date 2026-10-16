@@ -150,9 +150,17 @@ export default function App() {
     setDeadlines([]);
     setNotifications([]);
     setSelected(null);
+    setSelectedCaseId("");
+    setSummary({ active_cases: 0, documents: 0, upcoming_deadlines: 0, overdue_deadlines: 0, unread_notifications: 0 });
+    setError("");
+    setNotice("");
     setChatAnswer("");
     setChatSources([]);
+    setChatQuestion("");
+    setSearch("");
+    setSemanticQuery("");
     setSearchResults([]);
+    setSearchMessage("");
     setLoading(false);
   }
 
@@ -526,7 +534,7 @@ export default function App() {
             <label>Password<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} required minLength={needsBootstrap ? 12 : 1} maxLength={256} autoComplete={needsBootstrap ? "new-password" : "current-password"} placeholder={needsBootstrap ? "At least 12 characters" : "Your password"} /></label>
             <button className="button-primary" type="submit" disabled={authBusy}>{authBusy ? "Please wait…" : needsBootstrap ? "Create administrator ↗" : "Sign in securely ↗"}</button>
           </form>
-          <p className="auth-footnote">Access tokens stay in memory and are cleared when you sign out. Do not use this local development app for confidential client files until access controls and deployment hardening are complete.</p>
+          <p className="auth-footnote">Access tokens stay in memory and are cleared when you sign out. Do not use this local development app for confidential client files until controlled case sharing and production hardening are complete.</p>
         </div>
       </main>
     );
@@ -698,7 +706,7 @@ export default function App() {
         </section>}
       </section>
 
-      <footer className="footer"><span>LEGAL AI ASSISTANT</span><span>Keep sensitive case files private. Case-level access controls and deployment hardening are still required.</span></footer>
+      <footer className="footer"><span>LEGAL AI ASSISTANT</span><span>Keep sensitive case files private. Controlled case sharing and production hardening are still required.</span></footer>
     </main>
   );
 }
