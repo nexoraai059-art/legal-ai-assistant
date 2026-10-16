@@ -1,0 +1,128 @@
+{
+  "note": "Samples are not a substitute for checking each dataset's current license and source terms.",
+  "requested_rows_per_dataset": 10,
+  "successful_datasets": 10,
+  "failed_datasets": 0,
+  "results": [
+    {
+      "name": "LexGLUE — SCOTUS",
+      "dataset_id": "coastalcph/lex_glue",
+      "config": "scotus",
+      "source": "https://huggingface.co/datasets/coastalcph/lex_glue",
+      "license_note": "Review the dataset card and underlying source terms before reuse; component terms may differ.",
+      "requested_rows": 10,
+      "split": "train",
+      "status": "ok",
+      "rows_written": 10,
+      "output_file": "LexGLUE_SCOTUS.jsonl"
+    },
+    {
+      "name": "LexGLUE — CaseHOLD",
+      "dataset_id": "coastalcph/lex_glue",
+      "config": "case_hold",
+      "source": "https://huggingface.co/datasets/coastalcph/lex_glue",
+      "license_note": "Review the dataset card and underlying source terms before reuse; component terms may differ.",
+      "requested_rows": 10,
+      "split": "train",
+      "status": "ok",
+      "rows_written": 10,
+      "output_file": "LexGLUE_CaseHOLD.jsonl"
+    },
+    {
+      "name": "LexGLUE — LEDGAR",
+      "dataset_id": "coastalcph/lex_glue",
+      "config": "ledgar",
+      "source": "https://huggingface.co/datasets/coastalcph/lex_glue",
+      "license_note": "Review the dataset card and underlying source terms before reuse; component terms may differ.",
+      "requested_rows": 10,
+      "split": "train",
+      "status": "ok",
+      "rows_written": 10,
+      "output_file": "LexGLUE_LEDGAR.jsonl"
+    },
+    {
+      "name": "LexGLUE — EURLEX",
+      "dataset_id": "coastalcph/lex_glue",
+      "config": "eurlex",
+      "source": "https://huggingface.co/datasets/coastalcph/lex_glue",
+      "license_note": "Review the dataset card and underlying source terms before reuse; component terms may differ.",
+      "requested_rows": 10,
+      "split": "train",
+      "status": "ok",
+      "rows_written": 10,
+      "output_file": "LexGLUE_EURLEX.jsonl"
+    },
+    {
+      "name": "LexGLUE — Unfair ToS",
+      "dataset_id": "coastalcph/lex_glue",
+      "config": "unfair_tos",
+      "source": "https://huggingface.co/datasets/coastalcph/lex_glue",
+      "license_note": "Review the dataset card and underlying source terms before reuse; component terms may differ.",
+      "requested_rows": 10,
+      "split": "train",
+      "status": "ok",
+      "rows_written": 10,
+      "output_file": "LexGLUE_Unfair_ToS.jsonl"
+    },
+    {
+      "name": "LexGLUE — ECtHR Article Classification A",
+      "dataset_id": "coastalcph/lex_glue",
+      "config": "ecthr_a",
+      "source": "https://huggingface.co/datasets/coastalcph/lex_glue",
+      "license_note": "Review the dataset card and underlying source terms before reuse; component terms may differ.",
+      "requested_rows": 10,
+      "split": "train",
+      "status": "ok",
+      "rows_written": 10,
+      "output_file": "LexGLUE_ECtHR_Article_Classification_A.jsonl"
+    },
+    {
+      "name": "LexGLUE — ECtHR Article Classification B",
+      "dataset_id": "coastalcph/lex_glue",
+      "config": "ecthr_b",
+      "source": "https://huggingface.co/datasets/coastalcph/lex_glue",
+      "license_note": "Review the dataset card and underlying source terms before reuse; component terms may differ.",
+      "requested_rows": 10,
+      "split": "train",
+      "status": "ok",
+      "rows_written": 10,
+      "output_file": "LexGLUE_ECtHR_Article_Classification_B.jsonl"
+    },
+    {
+      "name": "CUAD — Contract Understanding Atticus Dataset",
+      "dataset_id": "theatticusproject/cuad",
+      "config": null,
+      "source": "https://huggingface.co/datasets/theatticusproject/cuad",
+      "license_note": "Check current dataset card and underlying contract document terms; preserve attribution and verify reuse rights.",
+      "requested_rows": 10,
+      "split": "train",
+      "status": "ok",
+      "rows_written": 10,
+      "output_file": "CUAD_Contract_Understanding_Atticus_Dataset.jsonl"
+    },
+    {
+      "name": "LegalBench-RAG",
+      "dataset_id": "awinml/legalbench-rag",
+      "config": null,
+      "source": "https://huggingface.co/datasets/awinml/legalbench-rag",
+      "license_note": "Mixed source licenses may apply. Treat as evaluation-only until per-source terms are verified.",
+      "requested_rows": 10,
+      "split": "train",
+      "status": "ok",
+      "rows_written": 10,
+      "output_file": "LegalBench-RAG.jsonl"
+    },
+    {
+      "name": "BillSum — legislative bill summarization",
+      "dataset_id": "FiscalNote/billsum",
+      "config": null,
+      "source": "https://huggingface.co/datasets/FiscalNote/billsum",
+      "license_note": "Review the current dataset card and source terms before reuse.",
+      "requested_rows": 10,
+      "split": "train",
+      "status": "ok",
+      "rows_written": 10,
+      "output_file": "BillSum_legislative_bill_summarization.jsonl"
+    }
+  ]
+}
