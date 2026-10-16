@@ -7,14 +7,16 @@ from pathlib import Path
 from uuid import uuid4
 
 import fitz
-from fastapi import FastAPI, File, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from typing import Literal
 
 from app.core.config import settings
 from app.services import documents as document_store
+from app.services import auth as auth_service
 from app.services import cases as case_service
 from app.services import chat as chat_service
 from app.services import embeddings, vector_store
@@ -36,6 +38,7 @@ async def _reminder_worker() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     document_store.initialize_storage()
+    auth_service.initialize_auth_storage()
     case_service.initialize_case_storage()
     vector_store.initialize_vector_store()
     worker = asyncio.create_task(_reminder_worker())
@@ -62,6 +65,78 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+PUBLIC_AUTH_PATHS = {"/api/auth/bootstrap/status", "/api/auth/bootstrap", "/api/auth/login"}
+
+
+@app.middleware("http")
+async def enforce_api_auth(request: Request, call_next):
+    path = request.url.path
+    if request.method == "OPTIONS" or not path.startswith("/api/") or path in PUBLIC_AUTH_PATHS:
+        return await call_next(request)
+    authorization = request.headers.get("Authorization", "")
+    if not authorization.startswith("Bearer "):
+        return JSONResponse({"detail": "Authentication required."}, status_code=401,
+                            headers={"WWW-Authenticate": "Bearer"})
+    user = auth_service.user_from_token(authorization[7:].strip())
+    if not user:
+        return JSONResponse({"detail": "Invalid or expired access token."}, status_code=401,
+                            headers={"WWW-Authenticate": "Bearer"})
+    request.state.user = user
+    role = user["role"]
+    method = request.method
+    required_roles = None
+    if path.startswith("/api/auth/users") and method in {"GET", "POST", "PATCH"}:
+        required_roles = {"admin"}
+    elif path == "/api/documents" and method == "POST":
+        required_roles = {"admin", "lawyer", "assistant"}
+    elif path.startswith("/api/documents/") and path.endswith("/index") and method == "POST":
+        required_roles = {"admin", "lawyer", "assistant"}
+    elif path.startswith("/api/documents/") and method == "DELETE":
+        required_roles = {"admin", "lawyer"}
+    elif path == "/api/cases" and method == "POST":
+        required_roles = {"admin", "lawyer"}
+    elif path.startswith("/api/cases/") and method == "PATCH":
+        required_roles = {"admin", "lawyer"}
+    elif path == "/api/deadlines" and method == "POST":
+        required_roles = {"admin", "lawyer"}
+    elif path.startswith("/api/deadlines/") and method == "PATCH":
+        required_roles = {"admin", "lawyer"}
+    elif path == "/api/reminders/run" and method == "POST":
+        required_roles = {"admin"}
+    if required_roles and role not in required_roles:
+        return JSONResponse({"detail": "Your role does not have permission to perform this action."}, status_code=403)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+class BootstrapAdminRequest(BaseModel):
+    full_name: str = Field(min_length=2, max_length=120)
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=12, max_length=256)
+
+
+class CreateUserRequest(BaseModel):
+    full_name: str = Field(min_length=2, max_length=120)
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=12, max_length=256)
+    role: Literal["admin", "lawyer", "assistant", "viewer"]
+
+
+class ActiveUserRequest(BaseModel):
+    is_active: bool
 
 
 class SearchRequest(BaseModel):
@@ -116,6 +191,73 @@ def health_check() -> dict[str, str]:
 @app.get("/", include_in_schema=False)
 def root() -> dict[str, str]:
     return {"message": "Legal AI Assistant API", "docs": "/docs"}
+
+
+@app.get("/api/auth/bootstrap/status", tags=["authentication"])
+def auth_bootstrap_status() -> dict[str, bool]:
+    return {"needs_bootstrap": auth_service.user_count() == 0}
+
+
+@app.post("/api/auth/bootstrap", status_code=status.HTTP_201_CREATED, tags=["authentication"])
+def bootstrap_first_admin(request: BootstrapAdminRequest) -> dict[str, object]:
+    try:
+        user = auth_service.bootstrap_admin(
+            email=request.email, full_name=request.full_name, password=request.password
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if user is None:
+        raise HTTPException(status_code=409, detail="An administrator has already been created.")
+    return {"user": user, "message": "Administrator account created. Sign in to continue."}
+
+
+@app.post("/api/auth/login", tags=["authentication"])
+def login(form: OAuth2PasswordRequestForm = Depends()) -> dict[str, object]:
+    user = auth_service.authenticate(form.username, form.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Incorrect email or password.",
+                            headers={"WWW-Authenticate": "Bearer"})
+    return {
+        "access_token": auth_service.create_access_token(user),
+        "token_type": "bearer",
+        "user": user,
+        "expires_in": settings.access_token_minutes * 60,
+    }
+
+
+@app.get("/api/auth/me", tags=["authentication"])
+def current_user(request: Request) -> dict[str, object]:
+    return request.state.user
+
+
+@app.get("/api/auth/users", tags=["authentication"])
+def get_users() -> dict[str, object]:
+    users = auth_service.list_users()
+    return {"items": users, "count": len(users)}
+
+
+@app.post("/api/auth/users", status_code=status.HTTP_201_CREATED, tags=["authentication"])
+def add_user(request: CreateUserRequest) -> dict[str, object]:
+    try:
+        return auth_service.create_user(
+            email=request.email, full_name=request.full_name,
+            password=request.password, role=request.role,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.patch("/api/auth/users/{user_id}/active", tags=["authentication"])
+def update_user_active(user_id: str, request: ActiveUserRequest, http_request: Request) -> dict[str, object]:
+    if user_id == http_request.state.user["id"] and not request.is_active:
+        raise HTTPException(status_code=400, detail="You cannot disable your own account.")
+    try:
+        user = auth_service.set_user_active(user_id, request.is_active)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return user
 
 
 @app.post("/api/documents", status_code=status.HTTP_201_CREATED, tags=["documents"])
