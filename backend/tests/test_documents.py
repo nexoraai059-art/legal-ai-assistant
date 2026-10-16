@@ -620,3 +620,98 @@ def test_document_sharing_permissions_search_and_revocation(client, monkeypatch)
     assert client.post("/api/search", json={"query": "agreement termination"}).json()["count"] == 0
     client.headers.update({"Authorization": "Bearer " + lawyer_login.json()["access_token"]})
     assert client.get("/api/documents").json()["count"] == 0
+
+
+def test_case_sharing_scopes_cases_deadlines_and_notifications(client):
+    owner_authorization = client.headers["Authorization"]
+    case_response = client.post("/api/cases", json={"title": "Shared contract case"})
+    assert case_response.status_code == 201, case_response.text
+    case_id = case_response.json()["id"]
+    deadline_response = client.post("/api/deadlines", json={
+        "case_id": case_id,
+        "title": "Review filing date",
+        "due_date": (date.today() + timedelta(days=2)).isoformat(),
+        "remind_days_before": 3,
+        "user_confirmed": True,
+    })
+    assert deadline_response.status_code == 201, deadline_response.text
+    deadline_id = deadline_response.json()["id"]
+
+    collaborator = client.post("/api/auth/users", json={
+        "full_name": "Case Collaborator",
+        "email": "case-collaborator@example.test",
+        "password": "CaseCollaboratorPassword123!",
+        "role": "lawyer",
+    })
+    assert collaborator.status_code == 201, collaborator.text
+    collaborator_id = collaborator.json()["id"]
+
+    read_share = client.post(f"/api/cases/{case_id}/shares", json={
+        "email": "case-collaborator@example.test",
+        "permission": "read",
+    })
+    assert read_share.status_code == 201, read_share.text
+    assert client.get(f"/api/cases/{case_id}/shares").json()["count"] == 1
+
+    login = client.post("/api/auth/login", data={
+        "username": "case-collaborator@example.test",
+        "password": "CaseCollaboratorPassword123!",
+    })
+    assert login.status_code == 200
+    collaborator_authorization = "Bearer " + login.json()["access_token"]
+    client.headers.update({"Authorization": collaborator_authorization})
+
+    shared_cases = client.get("/api/cases").json()
+    assert shared_cases["count"] == 1
+    assert shared_cases["items"][0]["id"] == case_id
+    assert shared_cases["items"][0]["access_level"] == "read"
+    assert "owner_id" not in shared_cases["items"][0]
+    assert client.get(f"/api/cases/{case_id}").json()["access_level"] == "read"
+    assert client.get(f"/api/cases/{case_id}/shares").status_code == 404
+    assert client.get("/api/deadlines").json()["items"][0]["access_level"] == "read"
+    assert client.patch(f"/api/cases/{case_id}", json={"status": "closed"}).status_code == 403
+    assert client.patch(f"/api/deadlines/{deadline_id}", json={"status": "completed"}).status_code == 403
+    denied_deadline = client.post("/api/deadlines", json={
+        "case_id": case_id,
+        "title": "Unauthorized shared deadline",
+        "due_date": (date.today() + timedelta(days=4)).isoformat(),
+        "user_confirmed": True,
+    })
+    assert denied_deadline.status_code == 403
+
+    client.headers.update({"Authorization": owner_authorization})
+    viewer = client.post("/api/auth/users", json={
+        "full_name": "Case Viewer",
+        "email": "case-viewer@example.test",
+        "password": "CaseViewerPassword123!",
+        "role": "viewer",
+    })
+    assert viewer.status_code == 201
+    viewer_write = client.post(f"/api/cases/{case_id}/shares", json={
+        "email": "case-viewer@example.test",
+        "permission": "write",
+    })
+    assert viewer_write.status_code == 422
+
+    write_share = client.post(f"/api/cases/{case_id}/shares", json={
+        "email": "case-collaborator@example.test",
+        "permission": "write",
+    })
+    assert write_share.status_code == 201, write_share.text
+    assert case_service.generate_reminder_notifications() == 2
+
+    client.headers.update({"Authorization": collaborator_authorization})
+    assert client.get("/api/notifications").json()["count"] == 1
+    changed_case = client.patch(f"/api/cases/{case_id}", json={"status": "closed"})
+    assert changed_case.status_code == 200, changed_case.text
+    changed_deadline = client.patch(f"/api/deadlines/{deadline_id}", json={"status": "completed"})
+    assert changed_deadline.status_code == 200, changed_deadline.text
+
+    client.headers.update({"Authorization": owner_authorization})
+    revoked = client.delete(f"/api/cases/{case_id}/shares/{collaborator_id}")
+    assert revoked.status_code == 204
+    client.headers.update({"Authorization": collaborator_authorization})
+    assert client.get(f"/api/cases/{case_id}").status_code == 404
+    assert client.get("/api/cases").json()["count"] == 0
+    assert client.get("/api/deadlines").json()["count"] == 0
+    assert client.get("/api/notifications").json()["count"] == 0
