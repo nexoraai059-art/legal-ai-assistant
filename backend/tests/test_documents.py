@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.core import config
 from app import main
+from app.services import auth as auth_service
 from app.services import cases as case_service
 from app.services import documents as document_store
 from app.services import vector_store
@@ -20,11 +21,24 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config.settings, "data_dir", data_dir)
     monkeypatch.setattr(document_store, "DB_PATH", data_dir / "test.sqlite3")
     monkeypatch.setattr(case_service, "DB_PATH", data_dir / "test.sqlite3")
+    monkeypatch.setattr(auth_service, "DB_PATH", data_dir / "test.sqlite3")
     monkeypatch.setattr(document_store, "UPLOAD_DIR", upload_dir)
     monkeypatch.setattr(vector_store, "CHROMA_DIR", data_dir / "chroma")
     monkeypatch.setattr(vector_store, "_client", None)
     monkeypatch.setattr(vector_store, "_collection", None)
     with TestClient(main.app) as test_client:
+        bootstrap = test_client.post("/api/auth/bootstrap", json={
+            "full_name": "Test Administrator",
+            "email": "admin@example.test",
+            "password": "StrongTestPassword123!",
+        })
+        assert bootstrap.status_code == 201, bootstrap.text
+        login = test_client.post("/api/auth/login", data={
+            "username": "admin@example.test",
+            "password": "StrongTestPassword123!",
+        })
+        assert login.status_code == 200, login.text
+        test_client.headers.update({"Authorization": "Bearer " + login.json()["access_token"]})
         yield test_client
 
 
@@ -41,6 +55,14 @@ def test_health_endpoint(client):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+
+
+def test_api_responses_are_not_cached(client):
+    response = client.get("/api/auth/me")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_upload_extract_list_detail_and_delete(client):
@@ -290,3 +312,69 @@ def test_deadline_source_page_must_exist(client):
     })
     assert response.status_code == 422
     assert "outside the document's page range" in response.json()["detail"]
+
+
+def test_auth_bootstrap_is_one_time_and_me_returns_safe_user(client):
+    assert client.get("/api/auth/bootstrap/status").json()["needs_bootstrap"] is False
+    second_bootstrap = client.post("/api/auth/bootstrap", json={
+        "full_name": "Second Administrator",
+        "email": "second-admin@example.test",
+        "password": "AnotherStrongPassword123!",
+    })
+    assert second_bootstrap.status_code == 409
+
+    me = client.get("/api/auth/me")
+    assert me.status_code == 200
+    assert me.json()["email"] == "admin@example.test"
+    assert me.json()["role"] == "admin"
+    assert "password_hash" not in me.json()
+
+
+def test_protected_api_rejects_missing_token(client):
+    response = client.get("/api/cases", headers={"Authorization": ""})
+    assert response.status_code == 401
+
+
+def test_short_jwt_secret_is_rejected(client, monkeypatch):
+    monkeypatch.setattr(config.settings, "jwt_secret_key", "too-short")
+    with pytest.raises(RuntimeError, match="at least 32 bytes"):
+        auth_service.initialize_auth_storage()
+
+
+def test_viewer_role_can_read_but_cannot_create_case(client):
+    created = client.post("/api/auth/users", json={
+        "full_name": "Read Only User",
+        "email": "viewer@example.test",
+        "password": "ViewerStrongPassword123!",
+        "role": "viewer",
+    })
+    assert created.status_code == 201, created.text
+    assert "password_hash" not in created.json()
+
+    login = client.post("/api/auth/login", data={
+        "username": "viewer@example.test",
+        "password": "ViewerStrongPassword123!",
+    })
+    assert login.status_code == 200
+    viewer_id = created.json()["id"]
+    viewer_token = login.json()["access_token"]
+    admin_authorization = client.headers["Authorization"]
+    client.headers.update({"Authorization": "Bearer " + viewer_token})
+
+    assert client.get("/api/cases").status_code == 200
+    denied = client.post("/api/cases", json={"title": "Viewer must not create cases"})
+    assert denied.status_code == 403
+    assert client.get("/api/auth/users").status_code == 403
+
+    client.headers.update({"Authorization": admin_authorization})
+    disabled = client.patch("/api/auth/users/" + viewer_id + "/active", json={"is_active": False})
+    assert disabled.status_code == 200
+    client.headers.update({"Authorization": "Bearer " + viewer_token})
+    assert client.get("/api/cases").status_code == 401
+    client.headers.update({"Authorization": admin_authorization})
+
+
+def test_admin_cannot_disable_the_only_active_admin(client):
+    user = client.get("/api/auth/me").json()
+    response = client.patch(f"/api/auth/users/{user['id']}/active", json={"is_active": False})
+    assert response.status_code == 400
