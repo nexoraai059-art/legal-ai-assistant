@@ -8,8 +8,8 @@ AI-assisted legal research for document-grounded answers with citations, real-ti
 - PDF extraction: PyMuPDF
 - Metadata: SQLite
 - Vector retrieval: ChromaDB with cosine similarity
-- Embeddings: OpenAI-compatible hosted embeddings API (default model `text-embedding-3-small`)
-- Planned RAG orchestration: LangChain + hosted LLM API
+- Embeddings: OpenAI-compatible hosted embeddings API (default `text-embedding-3-small`)
+- RAG orchestration: LangChain prompt + chat model integration
 - Planned real-time: FastAPI SSE/WebSockets
 
 ## Current implementation
@@ -18,9 +18,10 @@ AI-assisted legal research for document-grounded answers with citations, real-ti
 - Page-aware text chunking with overlap and source page numbers.
 - Hosted embedding provider integration and persistent ChromaDB indexing.
 - Semantic search API and dashboard controls to index documents, search passages, and inspect page references.
-- Backend tests for document lifecycle and text chunking.
+- RAG chat that retrieves passages, instructs the model to answer only from supplied excerpts, labels sources as `[S1]`, `[S2]`, and returns document/page metadata.
+- Automated backend tests for document lifecycle, chunking, indexing/search, and chat source metadata.
 
-Not implemented yet: authentication/authorization, cited LLM answers (RAG chat), streaming, case tracking, reminders, notifications, and deployment hardening.
+Not implemented yet: authentication/authorization, real-time token streaming, case tracking, reminders, notifications, and deployment hardening.
 
 ## Windows development setup
 Open two terminals from the repository root.
@@ -33,7 +34,7 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
-Edit `backend/.env` and set `EMBEDDING_API_KEY` for semantic indexing and search. Keep real keys out of Git. Then run:
+Edit `backend/.env` and set `EMBEDDING_API_KEY`, `LLM_API_KEY`, and `LLM_MODEL`. Keep real keys out of Git. Then run:
 ```powershell
 python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
@@ -63,6 +64,7 @@ cd backend
 - `GET /api/documents/{id}` — document metadata and extracted text.
 - `POST /api/documents/{id}/index` — chunk, embed, and index a document.
 - `POST /api/search` — semantic search; JSON body: `{"query":"...","limit":5}`.
+- `POST /api/chat` — RAG answer with source labels and document/page references; JSON body: `{"question":"...","limit":5}`.
 - `DELETE /api/documents/{id}` — delete stored file, metadata, and vector chunks.
 
 Defaults: 15 MB maximum upload and 500 pages per PDF. Change `MAX_UPLOAD_MB` and `MAX_PDF_PAGES` in the backend environment.
@@ -70,10 +72,10 @@ Defaults: 15 MB maximum upload and 500 pages per PDF. Change `MAX_UPLOAD_MB` and
 ## Local data and privacy
 By default, PDFs, SQLite metadata, and the ChromaDB index are stored under `backend/data/`, which is ignored by Git. Stored files use generated UUID filenames, not user-provided paths. Keep this folder backed up if local persistence matters. Scanned/image-only PDFs currently need OCR, which is not yet implemented.
 
-**Security limitation:** document and search endpoints currently have no login or case-level authorization. This is a local development milestone only. Do not expose the API publicly or upload confidential client files until authentication, authorization, and production storage protections are implemented. When using hosted embeddings, extracted legal text is sent to the configured embedding provider; confirm the provider's privacy and data-processing terms before using confidential files.
+**Security limitation:** document and chat endpoints currently have no login or case-level authorization. This is a local development milestone only. Do not expose the API publicly or upload confidential client files until authentication, authorization, and production storage protections are implemented. Hosted embeddings and chat send relevant extracted passages to the configured provider; review provider privacy and data-processing terms before confidential use.
 
 ## Legal reliability
-Retrieval results show source document and page metadata; they are not legal conclusions. The planned chat must ground claims in source passages and must not invent authorities, quotations, or deadlines. Treat generated content as research assistance rather than legal advice, and independently verify all legal sources and dates.
+The chat is instructed to answer only from retrieved excerpts, use source labels, and acknowledge missing evidence. This is not a guarantee that each generated claim is correct: verify every cited passage in context and independently confirm legal authorities and deadlines. Treat the application as research assistance, not legal advice.
 
 ## Dataset samples
 Benchmark samples are stored under `datasets/generated/`. Review each dataset's licence and terms before training, redistribution, or production use. These benchmark samples are not a store for private case documents.
