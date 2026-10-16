@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173"]
     jwt_secret_key: str = ""
     access_token_minutes: int = 60
+    login_rate_limit_attempts: int = 10
+    login_rate_limit_window_minutes: int = 15
     llm_api_key: str = ""
     llm_api_base_url: str = "https://api.openai.com/v1"
     llm_model: str = ""
