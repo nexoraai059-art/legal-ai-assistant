@@ -9,7 +9,7 @@ import re
 import secrets
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -93,6 +93,47 @@ def initialize_auth_storage() -> None:
             )"""
         )
         connection.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS login_failures (
+                id TEXT PRIMARY KEY,
+                ip_address TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )"""
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_login_failures_ip_created ON login_failures(ip_address, created_at)")
+
+
+def login_retry_after_seconds(ip_address: str) -> int:
+    """Return seconds until the oldest in-window failure expires, or zero if allowed."""
+    now = datetime.now(timezone.utc)
+    window = max(1, int(settings.login_rate_limit_window_minutes))
+    attempts = max(1, int(settings.login_rate_limit_attempts))
+    cutoff = (now - timedelta(minutes=window)).isoformat()
+    with _connect() as connection:
+        rows = connection.execute(
+            """SELECT created_at FROM login_failures
+               WHERE ip_address = ? AND created_at >= ? ORDER BY created_at ASC LIMIT ?""",
+            (ip_address or "unknown", cutoff, attempts),
+        ).fetchall()
+    if len(rows) < attempts:
+        return 0
+    oldest = datetime.fromisoformat(rows[0]["created_at"])
+    return max(1, int((oldest + timedelta(minutes=window) - now).total_seconds()))
+
+
+def record_login_failure(ip_address: str) -> None:
+    now = datetime.now(timezone.utc)
+    with _connect() as connection:
+        connection.execute("DELETE FROM login_failures WHERE created_at < ?", ((now - timedelta(days=1)).isoformat(),))
+        connection.execute(
+            "INSERT INTO login_failures (id, ip_address, created_at) VALUES (?, ?, ?)",
+            (str(uuid4()), ip_address or "unknown", now.isoformat()),
+        )
+
+
+def clear_login_failures(ip_address: str) -> None:
+    with _connect() as connection:
+        connection.execute("DELETE FROM login_failures WHERE ip_address = ?", (ip_address or "unknown",))
 
 
 def user_count() -> int:
