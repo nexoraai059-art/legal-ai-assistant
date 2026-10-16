@@ -47,6 +47,12 @@ export default function App() {
   const [newUserPassword, setNewUserPassword] = useState("");
   const [newUserRole, setNewUserRole] = useState("lawyer");
   const [teamBusy, setTeamBusy] = useState(false);
+  const [documentShares, setDocumentShares] = useState([]);
+  const [shareEmail, setShareEmail] = useState("");
+  const [sharePermission, setSharePermission] = useState("read");
+  const [shareBusy, setShareBusy] = useState(false);
+  const [sharesLoading, setSharesLoading] = useState(false);
+  const [busyShareRevoke, setBusyShareRevoke] = useState("");
   const [documents, setDocuments] = useState([]);
   const [selected, setSelected] = useState(null);
   const [search, setSearch] = useState("");
@@ -146,6 +152,9 @@ export default function App() {
     setAccessToken("");
     setAuthUser(null);
     setDocuments([]);
+    setDocumentShares([]);
+    setShareEmail("");
+    setSharePermission("read");
     setCases([]);
     setDeadlines([]);
     setNotifications([]);
@@ -235,6 +244,77 @@ export default function App() {
     if (accessToken && isAdmin) loadTeamUsers();
     else setTeamUsers([]);
   }, [accessToken, isAdmin, loadTeamUsers]);
+
+  useEffect(() => {
+    let active = true;
+    async function loadShares() {
+      if (!accessToken || !selected?.id || selected.access_level !== "owner") {
+        setDocumentShares([]);
+        setSharesLoading(false);
+        return;
+      }
+      setSharesLoading(true);
+      try {
+        const response = await apiFetch(`${API_BASE}/api/documents/${selected.id}/shares`);
+        if (!response.ok) throw new Error(await readApiError(response));
+        const payload = await response.json();
+        if (active) setDocumentShares(payload.items || []);
+      } catch (err) {
+        if (active) setError("Could not load document access. " + err.message);
+      } finally {
+        if (active) setSharesLoading(false);
+      }
+    }
+    loadShares();
+    return () => { active = false; };
+  }, [accessToken, selected?.id, selected?.access_level]);
+
+  async function shareDocument(event) {
+    event.preventDefault();
+    if (!selected?.id) return;
+    setShareBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await apiFetch(`${API_BASE}/api/documents/${selected.id}/shares`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: shareEmail, permission: sharePermission }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      const shared = await response.json();
+      setShareEmail("");
+      setNotice(`Shared ${selected.original_filename} with ${shared.email} (${shared.permission} access).`);
+      const listResponse = await apiFetch(`${API_BASE}/api/documents/${selected.id}/shares`);
+      if (!listResponse.ok) throw new Error(await readApiError(listResponse));
+      const payload = await listResponse.json();
+      setDocumentShares(payload.items || []);
+      await loadDocuments();
+    } catch (err) {
+      setError(err.message || "Could not share the document.");
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  async function revokeDocumentShare(item) {
+    if (!selected?.id || !window.confirm(`Revoke ${item.email}'s access to this document?`)) return;
+    setBusyShareRevoke(item.user_id);
+    setError("");
+    try {
+      const response = await apiFetch(`${API_BASE}/api/documents/${selected.id}/shares/${item.user_id}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      setDocumentShares((previous) => previous.filter((share) => share.user_id !== item.user_id));
+      setNotice(`Revoked document access for ${item.email}.`);
+      await loadDocuments();
+    } catch (err) {
+      setError(err.message || "Could not revoke document access.");
+    } finally {
+      setBusyShareRevoke("");
+    }
+  }
 
   async function createTeamUser(event) {
     event.preventDefault();
@@ -693,15 +773,31 @@ export default function App() {
         ) : (
           <div className="document-table-wrap"><table className="document-table"><thead><tr><th>DOCUMENT</th><th>PAGES</th><th>SIZE</th><th>ADDED</th><th><span className="visually-hidden">Actions</span></th></tr></thead><tbody>
             {filteredDocuments.map((item) => <tr key={item.id} className={selected?.id === item.id ? "selected-row" : ""}>
-              <td><button className="document-name" onClick={() => openDocument(item.id)}><span className="pdf-badge">PDF</span><span><strong>{item.original_filename}</strong><small>{Number(item.extracted_characters || 0).toLocaleString()} extracted characters</small></span></button></td>
+              <td><button className="document-name" onClick={() => openDocument(item.id)}><span className="pdf-badge">PDF</span><span><strong>{item.original_filename}</strong><small>{Number(item.extracted_characters || 0).toLocaleString()} extracted characters</small>{item.access_level !== "owner" && <small className="shared-label">Shared with you · {item.access_level === "write" ? "can index" : "read only"}</small>}</span></button></td>
               <td>{item.page_count}</td><td>{formatBytes(item.size_bytes)}</td><td className="date-cell">{formatDate(item.created_at)}</td>
-              <td className="row-actions"><button className="index-button" onClick={() => indexDocument(item)} disabled={busyIndex === item.id || !canUploadDocuments}>{busyIndex === item.id ? "Indexing…" : item.indexed ? "Re-index" : "Index"}</button><button className="delete-button" onClick={() => removeDocument(item)} disabled={busyDelete === item.id || !canManageCases} aria-label={`Delete ${item.original_filename}`}>{busyDelete === item.id ? "…" : "Delete"}</button></td>
+              <td className="row-actions"><button className="index-button" onClick={() => indexDocument(item)} disabled={busyIndex === item.id || !canUploadDocuments || item.access_level === "read"}>{busyIndex === item.id ? "Indexing…" : item.indexed ? "Re-index" : "Index"}</button>{item.access_level === "owner" && <button className="share-button" type="button" onClick={() => openDocument(item.id)}>Share</button>}<button className="delete-button" onClick={() => removeDocument(item)} disabled={busyDelete === item.id || !canManageCases || item.access_level !== "owner"} aria-label={`Delete ${item.original_filename}`}>{busyDelete === item.id ? "…" : "Delete"}</button></td>
             </tr>)}
           </tbody></table></div>
         )}
 
         {selected && <section className="detail-panel" aria-label="Document extracted text">
           <div className="detail-heading"><div><p className="eyebrow">SOURCE PREVIEW</p><h3>{selected.original_filename}</h3><p>{selected.page_count} page(s) · SHA-256 <code>{selected.sha256}</code></p></div><button className="close-detail" onClick={() => setSelected(null)} aria-label="Close document preview">×</button></div>
+          {selected.access_level === "owner" && <section className="share-panel" aria-label="Document sharing controls">
+            <div className="share-panel-heading"><div><p className="eyebrow">DOCUMENT ACCESS</p><h4>Share this document</h4><p>Grant access to an active account using its email address.</p></div><span className="share-lock">OWNER</span></div>
+            <form className="share-form" onSubmit={shareDocument}>
+              <label>Account email<input type="email" value={shareEmail} onChange={(event) => setShareEmail(event.target.value)} required maxLength={254} placeholder="colleague@example.com" /></label>
+              <label>Permission<select value={sharePermission} onChange={(event) => setSharePermission(event.target.value)}><option value="read">Read only</option><option value="write">Can index</option></select></label>
+              <button className="button-primary" type="submit" disabled={shareBusy || !shareEmail.trim()}>{shareBusy ? "Sharing…" : "Grant access +"}</button>
+            </form>
+            <div className="share-list">
+              <h5>People with access <span>{documentShares.length}</span></h5>
+              {sharesLoading ? <p className="subtle-copy">Loading access list…</p> : documentShares.length === 0 ? <p className="subtle-copy">This document is private to your account.</p> : documentShares.map((item) => <article className="share-row" key={item.user_id}>
+                <div><strong>{item.full_name}</strong><small>{item.email}</small></div>
+                <div className="share-row-actions"><span className={"status-pill " + (item.permission === "write" ? "status-active" : "status-archived")}>{item.permission === "write" ? "Can index" : "Read only"}</span><button className="read-button" type="button" onClick={() => revokeDocumentShare(item)} disabled={busyShareRevoke === item.user_id}>{busyShareRevoke === item.user_id ? "Revoking…" : "Revoke"}</button></div>
+              </article>)}
+            </div>
+            <p className="share-note">Read-only users can preview and search this document. “Can index” also permits indexing; only the owner can delete the file or change sharing.</p>
+          </section>}
           <div className="extracted-text">{selected.extracted_text ? selected.extracted_text : "No selectable text was found in this PDF. It may be a scanned document; OCR support has not been added yet."}</div>
         </section>}
       </section>
