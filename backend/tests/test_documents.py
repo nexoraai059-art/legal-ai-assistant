@@ -178,3 +178,36 @@ def test_chat_removes_unknown_source_labels():
     assert "[S1]" in validated
     assert "[S9]" not in validated
     assert "[unverified source reference omitted]" in validated
+
+def test_chat_stream_sends_sse_source_token_and_done_events(client, monkeypatch):
+    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda: 1)
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit: [{
+        "document_id": "doc-1", "filename": "notice.pdf", "page_start": 2,
+        "page_end": 2, "chunk_index": 0, "score": 0.9, "text": "[Page 2] Written notice is required.",
+    }])
+    monkeypatch.setattr(main.chat_service, "ensure_chat_configured", lambda: None)
+    monkeypatch.setattr(main.chat_service, "stream_answer", lambda question, sources: iter(["Notice is required ", "[S1]."]))
+
+    response = client.post("/api/chat/stream", json={"question": "Is written notice required?"})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: sources" in response.text
+    assert '"filename": "notice.pdf"' in response.text
+    assert "event: token" in response.text
+    assert "Notice is required " in response.text
+    assert "event: done" in response.text
+
+
+def test_chat_stream_rejects_missing_llm_configuration_before_streaming(client, monkeypatch):
+    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda: 1)
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit: [{
+        "document_id": "doc-1", "filename": "notice.pdf", "page_start": 1,
+        "page_end": 1, "chunk_index": 0, "score": 0.9, "text": "[Page 1] Notice terms.",
+    }])
+    monkeypatch.setattr(config.settings, "llm_api_key", "")
+    monkeypatch.setattr(config.settings, "llm_model", "")
+    response = client.post("/api/chat/stream", json={"question": "What are the notice terms?"})
+    assert response.status_code == 503
+    assert "LLM_API_KEY" in response.json()["detail"]
