@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
+import json
 from pathlib import Path
 from uuid import uuid4
 
 import fitz
 from fastapi import FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
@@ -238,6 +240,56 @@ def legal_document_chat(request: ChatRequest) -> dict[str, object]:
         "sources": public_sources,
         "disclaimer": "AI-generated research assistance. Verify the cited document passages and any legal conclusions.",
     }
+
+
+@app.post("/api/chat/stream", tags=["chat"])
+def legal_document_chat_stream(request: ChatRequest) -> StreamingResponse:
+    """Stream an answer using Server-Sent Events (SSE)."""
+    if vector_store.indexed_chunk_count() == 0:
+        raise HTTPException(status_code=409, detail="Index a document before asking questions.")
+    try:
+        query_vector = embeddings.embed_texts([request.question])[0]
+    except (embeddings.EmbeddingConfigurationError, embeddings.EmbeddingProviderError) as exc:
+        raise _embedding_error(exc) from exc
+    retrieved = vector_store.search_chunks(query_vector, limit=request.limit)
+    if not retrieved:
+        raise HTTPException(status_code=404, detail="No relevant source passages were found.")
+    sources: list[dict[str, object]] = []
+    for index, result in enumerate(retrieved, start=1):
+        sources.append({
+            "source_id": f"S{index}",
+            "document_id": result["document_id"],
+            "filename": result["filename"],
+            "page_start": result["page_start"],
+            "page_end": result["page_end"],
+            "score": result["score"],
+            "text": result["text"],
+            "excerpt": result["text"][:700],
+        })
+    try:
+        chat_service.ensure_chat_configured()
+    except chat_service.ChatConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    public_sources = [
+        {key: source[key] for key in ("source_id", "document_id", "filename", "page_start", "page_end", "score", "excerpt")}
+        for source in sources
+    ]
+
+    def event_stream():
+        yield f"event: sources\ndata: {json.dumps(public_sources, ensure_ascii=False)}\n\n"
+        try:
+            for fragment in chat_service.stream_answer(request.question, sources):
+                yield f"event: token\ndata: {json.dumps({'text': fragment}, ensure_ascii=False)}\n\n"
+            yield f"event: done\ndata: {json.dumps({'disclaimer': 'AI-generated research assistance, not legal advice.'})}\n\n"
+        except chat_service.ChatProviderError as exc:
+            yield f"event: error\ndata: {json.dumps({'detail': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.delete("/api/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["documents"])
