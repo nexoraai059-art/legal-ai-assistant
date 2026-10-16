@@ -24,15 +24,16 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 - Real-time notification SSE snapshots with reconnecting browser clients, per-account access filtering, and session revalidation while streams remain open.
 - Case register, case status, user-confirmed deadlines, source document/page association, deadline completion, and activity logs.
 - Background deadline checks every five minutes and deduplicated in-app upcoming/overdue notifications.
+- Encrypted manual backup/restore for SQLite, uploaded PDFs, and Chroma data, with authenticated encryption, file-hash validation, SQLite integrity checks, and safe preservation of the previous data directory.
 - React dashboard with summary metrics, case forms, deadline management, notifications, document library, semantic search, and RAG chat.
-- Automated tests for document lifecycle, retrieval, chat citations, SSE, deadline reminders, account isolation, and case/document sharing.
+- Automated tests for document lifecycle, retrieval, chat citations, notification SSE, session revocation, deadline reminders, account isolation, case/document sharing, and encrypted backup/restore.
 
 ## Still outstanding
 - Organization tenancy and cross-organization access policies; case and document sharing grants access to individual active accounts within the same local user store.
 - Password reset, MFA, refresh-token revocation, and production audit identity.
 - OCR for scanned PDFs, email/SMS/push notifications, and calendar integrations.
 - WebSocket transport (chat and notification streaming currently use Server-Sent Events, SSE).
-- Automated hosted-provider evaluation, full security review, deployment, and production backup/restore.
+- Automated hosted-provider evaluation, full security review, deployment, and scheduled off-site backup/restore operations.
 
 ## Windows development setup
 Open two terminals from the repository root.
@@ -96,6 +97,25 @@ Defaults: 15 MB maximum upload and 500 pages per PDF. Change `MAX_UPLOAD_MB` and
 By default, PDFs, SQLite metadata, and the ChromaDB index are stored under `backend/data/`, which is ignored by Git. Stored files use generated UUID filenames, not user-provided paths. Keep this folder backed up if local persistence matters. Scanned/image-only PDFs currently need OCR, which is not yet implemented.
 
 **Security limitation:** each account is isolated from other accounts' documents, search results, cases, deadlines, notifications, activity, and dashboard data. Owners can share individual cases and documents with active accounts and revoke access; case and document sharing are not organization-level tenancy. Password reset, MFA, refresh-token revocation, external security review, and production deployment hardening are still outstanding. This remains a local-development prototype; do not expose the API publicly or upload confidential client files until production security review and operational safeguards are complete. Hosted embeddings and chat send extracted passages to the configured provider; review provider privacy and data-processing terms before confidential use. Do not commit `.env` files or API keys.
+
+## Encrypted backup and restore
+
+Stop the backend server before backing up or restoring data so the document files and Chroma index are not changing during the operation. From the repository root:
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m app.backup backup
+```
+
+The encrypted `.lai` backup is written to `backend/backups/`. The first run creates `backend/backup-encryption.key`. **Keep that key in a secure location separate from the backup files**; anyone who obtains both can read the data, and losing the key makes the backup unrecoverable. The key and backup directory are excluded from Git.
+
+To restore, stop the backend and use the exact backup filename:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.backup restore .\backups\legal-ai-backup-YYYYMMDDTHHMMSSZ.lai --replace
+```
+
+`--replace` is required when the target data directory already exists. The tool verifies the backup before activating it and preserves the previous data directory as a timestamped sibling. Review that preserved directory before deleting it.
 
 ## Deadline reliability
 The application never automatically invents or saves legal deadlines. A person must confirm the date before it can be stored. Optional source document and page references are validated against uploaded documents. Reminder generation is based only on the stored, confirmed date; independently verify all legal dates and required actions.
