@@ -212,11 +212,21 @@ def bootstrap_first_admin(request: BootstrapAdminRequest) -> dict[str, object]:
 
 
 @app.post("/api/auth/login", tags=["authentication"])
-def login(form: OAuth2PasswordRequestForm = Depends()) -> dict[str, object]:
+def login(request: Request, form: OAuth2PasswordRequestForm = Depends()) -> dict[str, object]:
+    client_ip = request.client.host if request.client else "unknown"
+    retry_after = auth_service.login_retry_after_seconds(client_ip)
+    if retry_after:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed sign-in attempts. Try again after the indicated delay.",
+            headers={"Retry-After": str(retry_after)},
+        )
     user = auth_service.authenticate(form.username, form.password)
     if not user:
+        auth_service.record_login_failure(client_ip)
         raise HTTPException(status_code=401, detail="Incorrect email or password.",
                             headers={"WWW-Authenticate": "Bearer"})
+    auth_service.clear_login_failures(client_ip)
     return {
         "access_token": auth_service.create_access_token(user),
         "token_type": "bearer",
