@@ -39,6 +39,21 @@ export default function App() {
   const [chatAnswer, setChatAnswer] = useState("");
   const [chatSources, setChatSources] = useState([]);
   const [chatting, setChatting] = useState(false);
+  const [cases, setCases] = useState([]);
+  const [deadlines, setDeadlines] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [summary, setSummary] = useState({ active_cases: 0, documents: 0, upcoming_deadlines: 0, overdue_deadlines: 0, unread_notifications: 0 });
+  const [caseTitle, setCaseTitle] = useState("");
+  const [caseNumber, setCaseNumber] = useState("");
+  const [caseJurisdiction, setCaseJurisdiction] = useState("");
+  const [savingCase, setSavingCase] = useState(false);
+  const [selectedCaseId, setSelectedCaseId] = useState("");
+  const [deadlineTitle, setDeadlineTitle] = useState("");
+  const [deadlineDate, setDeadlineDate] = useState("");
+  const [deadlineSourceDocumentId, setDeadlineSourceDocumentId] = useState("");
+  const [deadlineSourcePage, setDeadlineSourcePage] = useState("");
+  const [deadlineConfirmed, setDeadlineConfirmed] = useState(false);
+  const [savingDeadline, setSavingDeadline] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const inputRef = useRef(null);
@@ -57,13 +72,141 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => { loadDocuments(); }, [loadDocuments]);
+  const loadCaseData = useCallback(async () => {
+    try {
+      const [caseResponse, deadlineResponse, notificationResponse, summaryResponse] = await Promise.all([
+        fetch(API_BASE + "/api/cases"),
+        fetch(API_BASE + "/api/deadlines"),
+        fetch(API_BASE + "/api/notifications?limit=10"),
+        fetch(API_BASE + "/api/dashboard/summary"),
+      ]);
+      for (const response of [caseResponse, deadlineResponse, notificationResponse, summaryResponse]) {
+        if (!response.ok) throw new Error(await readApiError(response));
+      }
+      const [casePayload, deadlinePayload, notificationPayload, summaryPayload] = await Promise.all([
+        caseResponse.json(), deadlineResponse.json(), notificationResponse.json(), summaryResponse.json(),
+      ]);
+      setCases(casePayload.items || []);
+      setSelectedCaseId((previous) => previous || casePayload.items?.[0]?.id || "");
+      setDeadlines(deadlinePayload.items || []);
+      setNotifications(notificationPayload.items || []);
+      setSummary(summaryPayload);
+    } catch (err) {
+      setError("Could not load case tracking data. " + err.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadDocuments();
+    loadCaseData();
+    const refresh = window.setInterval(() => { loadCaseData(); }, 30000);
+    return () => window.clearInterval(refresh);
+  }, [loadDocuments, loadCaseData]);
 
   const filteredDocuments = useMemo(() => {
     const term = search.trim().toLowerCase();
     if (!term) return documents;
     return documents.filter((item) => item.original_filename.toLowerCase().includes(term));
   }, [documents, search]);
+
+  async function createCase(event) {
+    event.preventDefault();
+    setSavingCase(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(API_BASE + "/api/cases", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: caseTitle,
+          case_number: caseNumber.trim() || null,
+          jurisdiction: caseJurisdiction.trim() || null,
+        }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      const created = await response.json();
+      setSelectedCaseId(created.id);
+      setCaseTitle("");
+      setCaseNumber("");
+      setCaseJurisdiction("");
+      setNotice("Created case: " + created.title);
+      await loadCaseData();
+    } catch (err) {
+      setError(err.message || "Could not create the case.");
+    } finally {
+      setSavingCase(false);
+    }
+  }
+
+  async function createDeadline(event) {
+    event.preventDefault();
+    setSavingDeadline(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(API_BASE + "/api/deadlines", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          case_id: selectedCaseId,
+          title: deadlineTitle,
+          due_date: deadlineDate,
+          source_document_id: deadlineSourceDocumentId || null,
+          source_page: deadlineSourcePage ? Number(deadlineSourcePage) : null,
+          remind_days_before: 3,
+          user_confirmed: deadlineConfirmed,
+        }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      const created = await response.json();
+      setDeadlineTitle("");
+      setDeadlineDate("");
+      setDeadlineSourceDocumentId("");
+      setDeadlineSourcePage("");
+      setDeadlineConfirmed(false);
+      setNotice("Saved confirmed deadline: " + created.title);
+      await loadCaseData();
+    } catch (err) {
+      setError(err.message || "Could not create the deadline.");
+    } finally {
+      setSavingDeadline(false);
+    }
+  }
+
+  async function completeDeadline(item) {
+    try {
+      const response = await fetch(API_BASE + "/api/deadlines/" + item.id, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "completed" }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      setNotice("Marked deadline complete: " + item.title);
+      await loadCaseData();
+    } catch (err) {
+      setError(err.message || "Could not update the deadline.");
+    }
+  }
+
+  async function markNotificationRead(item) {
+    try {
+      const response = await fetch(API_BASE + "/api/notifications/" + item.id + "/read", { method: "POST" });
+      if (!response.ok) throw new Error(await readApiError(response));
+      await loadCaseData();
+    } catch (err) {
+      setError(err.message || "Could not mark the notification as read.");
+    }
+  }
+
+  async function runReminderCheck() {
+    try {
+      const response = await fetch(API_BASE + "/api/reminders/run", { method: "POST" });
+      if (!response.ok) throw new Error(await readApiError(response));
+      const result = await response.json();
+      setNotice("Reminder check complete. Created " + result.notifications_created + " notification(s).");
+      await loadCaseData();
+    } catch (err) {
+      setError(err.message || "Reminder check failed.");
+    }
+  }
 
   async function handleUpload(event) {
     const file = event.target.files?.[0];
@@ -88,6 +231,7 @@ export default function App() {
       const created = await response.json();
       setNotice(`Uploaded ${created.filename}. Extracted ${created.extracted_characters.toLocaleString()} characters from ${created.page_count} page(s).`);
       await loadDocuments();
+      await loadCaseData();
       const detailResponse = await fetch(`${API_BASE}/api/documents/${created.id}`);
       if (detailResponse.ok) setSelected(await detailResponse.json());
     } catch (err) {
@@ -215,14 +359,73 @@ export default function App() {
           <span className="brand-mark">L</span>
           <span>Legal AI <span className="brand-light">/ Intelligence</span></span>
         </a>
-        <div className="topbar-right"><span className="api-status"><span className={error && documents.length === 0 ? "status-dot status-error" : "status-dot"} />{error && documents.length === 0 ? "API connection needed" : "Local workspace"}</span><span className="phase-label">PHASE 2 · DOCUMENTS</span></div>
+        <div className="topbar-right"><span className="api-status"><span className={error && documents.length === 0 ? "status-dot status-error" : "status-dot"} />{error && documents.length === 0 ? "API connection needed" : "Local workspace"}</span><span className="phase-label">CASE + DOCUMENTS</span></div>
       </header>
 
       <section className="hero">
         <p className="eyebrow">LEGAL RESEARCH · CASE INTELLIGENCE · COMPLIANCE</p>
         <h1>Evidence first.<br /><em>Answers you can verify.</em></h1>
         <p className="hero-copy">Bring your case documents into one workspace. Upload a PDF, extract its text, and inspect the source before moving on to search and AI-assisted research.</p>
-        <div className="hero-foot"><span className="hero-index">01 / DOCUMENT INTELLIGENCE</span><span className="disclaimer">Research support only · Not legal advice</span></div>
+        <div className="hero-foot"><span className="hero-index">01 / CASE & DOCUMENT INTELLIGENCE</span><span className="disclaimer">Research support only · Not legal advice</span></div>
+      </section>
+
+      <section className="case-dashboard" id="cases">
+        <div className="section-heading"><div><p className="eyebrow">CASE OPERATIONS</p><h2>Case tracker</h2></div><button className="button-secondary reminder-button" onClick={runReminderCheck}>Check reminders now ↻</button></div>
+        <div className="summary-grid">
+          <article><span>ACTIVE CASES</span><strong>{summary.active_cases}</strong></article>
+          <article><span>DOCUMENTS</span><strong>{summary.documents}</strong></article>
+          <article><span>DUE IN 7 DAYS</span><strong>{summary.upcoming_deadlines}</strong></article>
+          <article className={summary.overdue_deadlines ? "summary-alert" : ""}><span>OVERDUE</span><strong>{summary.overdue_deadlines}</strong></article>
+          <article><span>UNREAD ALERTS</span><strong>{summary.unread_notifications}</strong></article>
+        </div>
+
+        <div className="management-grid">
+          <section className="management-card">
+            <div className="management-title"><p className="eyebrow">CASE REGISTER</p><h3>Create a case</h3></div>
+            <form className="stacked-form" onSubmit={createCase}>
+              <label>Case title<input value={caseTitle} onChange={(event) => setCaseTitle(event.target.value)} required minLength={3} maxLength={180} placeholder="e.g. Supplier contract dispute" /></label>
+              <div className="form-row"><label>Case number <span>(optional)</span><input value={caseNumber} onChange={(event) => setCaseNumber(event.target.value)} maxLength={120} placeholder="Case / reference ID" /></label><label>Jurisdiction <span>(optional)</span><input value={caseJurisdiction} onChange={(event) => setCaseJurisdiction(event.target.value)} maxLength={120} placeholder="Court or region" /></label></div>
+              <button className="button-primary" type="submit" disabled={savingCase}>{savingCase ? "Saving…" : "Create case +"}</button>
+            </form>
+            <div className="case-list"><h4>Saved cases <span>{cases.length}</span></h4>
+              {cases.length === 0 ? <p className="subtle-copy">No cases yet. Create one to attach deadlines.</p> : cases.map((item) => <button className={"case-list-item " + (selectedCaseId === item.id ? "case-selected" : "")} key={item.id} onClick={() => setSelectedCaseId(item.id)}>
+                <span><strong>{item.title}</strong><small>{item.case_number || item.jurisdiction || "No reference added"}</small></span><span className={"status-pill status-" + item.status}>{item.status}</span>
+              </button>)}
+            </div>
+          </section>
+
+          <section className="management-card">
+            <div className="management-title"><p className="eyebrow">VERIFIED OBLIGATIONS</p><h3>Record a deadline</h3><p>Only save dates you have verified from a reliable source.</p></div>
+            {cases.length === 0 ? <p className="subtle-copy">Create a case first, then you can add its deadlines.</p> : <form className="stacked-form" onSubmit={createDeadline}>
+              <label>Case<select value={selectedCaseId} onChange={(event) => setSelectedCaseId(event.target.value)} required>{cases.filter((item) => item.status === "active").map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}</select></label>
+              <label>Deadline / action<input value={deadlineTitle} onChange={(event) => setDeadlineTitle(event.target.value)} required minLength={3} maxLength={180} placeholder="e.g. File written response" /></label>
+              <label>Due date<input type="date" value={deadlineDate} onChange={(event) => setDeadlineDate(event.target.value)} required /></label>
+              <label>Source document <span>(optional)</span><select value={deadlineSourceDocumentId} onChange={(event) => { setDeadlineSourceDocumentId(event.target.value); setDeadlineSourcePage(""); }}><option value="">No document linked</option>{documents.map((item) => <option value={item.id} key={item.id}>{item.original_filename}</option>)}</select></label>
+              {deadlineSourceDocumentId && <label>Source page<input type="number" min="1" max={documents.find((item) => item.id === deadlineSourceDocumentId)?.page_count || 500} value={deadlineSourcePage} onChange={(event) => setDeadlineSourcePage(event.target.value)} required placeholder="Page containing the date" /></label>}
+              <label className="confirm-check"><input type="checkbox" checked={deadlineConfirmed} onChange={(event) => setDeadlineConfirmed(event.target.checked)} required /><span>I have verified this date and action against the source or an authoritative record.</span></label>
+              <button className="button-primary" type="submit" disabled={savingDeadline || !selectedCaseId || !deadlineConfirmed}>{savingDeadline ? "Saving…" : "Save confirmed deadline +"}</button>
+            </form>}
+          </section>
+        </div>
+
+        <div className="operations-grid">
+          <section className="management-card">
+            <div className="management-title"><p className="eyebrow">CALENDAR WATCH</p><h3>Deadlines</h3></div>
+            {deadlines.length === 0 ? <p className="subtle-copy">No deadlines recorded yet.</p> : <div className="deadline-list">{deadlines.map((item) => <article className="deadline-item" key={item.id}>
+              <div className="deadline-date"><strong>{new Date(item.due_date + "T12:00:00").toLocaleDateString(undefined, { day: "2-digit" })}</strong><span>{new Date(item.due_date + "T12:00:00").toLocaleDateString(undefined, { month: "short" })}</span></div>
+              <div className="deadline-info"><strong>{item.title}</strong><small>{item.case_title} · Due {item.due_date}{item.source_page ? " · Source p. " + item.source_page : ""}</small></div>
+              {item.status === "pending" ? <button className="complete-button" onClick={() => completeDeadline(item)}>Complete</button> : <span className={"status-pill status-" + item.status}>{item.status}</span>}
+            </article>)}</div>}
+          </section>
+          <section className="management-card">
+            <div className="management-title notification-title"><div><p className="eyebrow">REMINDER FEED</p><h3>Notifications</h3></div><span className="notification-count">{notifications.filter((item) => !item.read_at).length} unread</span></div>
+            {notifications.length === 0 ? <p className="subtle-copy">No notifications. A reminder check runs automatically in the background.</p> : <div className="notification-list">{notifications.map((item) => <article className={"notification-item " + (!item.read_at ? "notification-unread" : "")} key={item.id}>
+              <span className={"notification-symbol " + (item.notification_type === "deadline_overdue" ? "symbol-alert" : "")}>{item.notification_type === "deadline_overdue" ? "!" : "↗"}</span>
+              <div><strong>{item.title}</strong><p>{item.body}</p><small>{formatDate(item.created_at)}{item.case_title ? " · " + item.case_title : ""}</small></div>
+              {!item.read_at && <button className="read-button" onClick={() => markNotificationRead(item)}>Mark read</button>}
+            </article>)}</div>}
+          </section>
+        </div>
       </section>
 
       <section className="workspace" id="workspace">
