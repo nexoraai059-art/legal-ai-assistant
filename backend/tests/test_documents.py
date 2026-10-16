@@ -127,3 +127,54 @@ def test_index_reports_missing_embedding_configuration(client, monkeypatch):
     response = client.post(f"/api/documents/{document_id}/index")
     assert response.status_code == 503
     assert "not configured" in response.json()["detail"]
+
+def test_chat_returns_answer_with_document_page_sources(client, monkeypatch):
+    upload = client.post(
+        "/api/documents",
+        files={"file": ("agreement.pdf", make_pdf("The supplier must provide thirty days written notice."), "application/pdf")},
+    )
+    document_id = upload.json()["id"]
+    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda: 1)
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit: [{
+        "document_id": document_id,
+        "filename": "agreement.pdf",
+        "page_start": 1,
+        "page_end": 1,
+        "chunk_index": 0,
+        "score": 0.91,
+        "text": "[Page 1] The supplier must provide thirty days written notice.",
+    }])
+    monkeypatch.setattr(main.chat_service, "generate_answer", lambda question, sources: "The supplier must provide thirty days written notice [S1].")
+
+    response = client.post("/api/chat", json={"question": "What notice is required?"})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "[S1]" in payload["answer"]
+    assert payload["sources"][0]["filename"] == "agreement.pdf"
+    assert payload["sources"][0]["page_start"] == 1
+    assert payload["disclaimer"]
+
+
+def test_chat_requires_llm_configuration(client, monkeypatch):
+    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda: 1)
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit: [{
+        "document_id": "doc-1", "filename": "agreement.pdf", "page_start": 1,
+        "page_end": 1, "chunk_index": 0, "score": 0.8, "text": "[Page 1] notice terms",
+    }])
+    monkeypatch.setattr(config.settings, "llm_api_key", "")
+    monkeypatch.setattr(config.settings, "llm_model", "")
+    response = client.post("/api/chat", json={"question": "What are the notice terms?"})
+    assert response.status_code == 503
+    assert "LLM_API_KEY" in response.json()["detail"]
+
+
+def test_chat_removes_unknown_source_labels():
+    from app.services.chat import validate_source_references
+
+    answer = "The document says notice is required [S1]. Another claim [S9]."
+    validated = validate_source_references(answer, [{"source_id": "S1"}])
+    assert "[S1]" in validated
+    assert "[S9]" not in validated
+    assert "[unverified source reference omitted]" in validated

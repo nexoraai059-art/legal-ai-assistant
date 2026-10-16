@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     cors_origins: list[str] = ["http://localhost:5173"]
     llm_api_key: str = ""
+    llm_api_base_url: str = "https://api.openai.com/v1"
     llm_model: str = ""
     embedding_api_key: str = ""
     embedding_api_base_url: str = "https://api.openai.com/v1"

@@ -35,6 +35,10 @@ export default function App() {
   const [searchResults, setSearchResults] = useState([]);
   const [searchMessage, setSearchMessage] = useState("");
   const [searching, setSearching] = useState(false);
+  const [chatQuestion, setChatQuestion] = useState("");
+  const [chatAnswer, setChatAnswer] = useState("");
+  const [chatSources, setChatSources] = useState([]);
+  const [chatting, setChatting] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const inputRef = useRef(null);
@@ -143,6 +147,28 @@ export default function App() {
     }
   }
 
+  async function submitChat(event) {
+    event.preventDefault();
+    setChatting(true);
+    setChatAnswer("");
+    setChatSources([]);
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE}/api/chat`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: chatQuestion, limit: 5 }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      const payload = await response.json();
+      setChatAnswer(payload.answer || "No answer was returned.");
+      setChatSources(payload.sources || []);
+    } catch (err) {
+      setError(err.message || "The AI chat request failed.");
+    } finally {
+      setChatting(false);
+    }
+  }
+
   async function removeDocument(item) {
     if (!window.confirm(`Delete "${item.original_filename}" and its extracted text? This cannot be undone.`)) return;
     setBusyDelete(item.id);
@@ -205,6 +231,21 @@ export default function App() {
             <div className="result-meta"><button onClick={() => openDocument(result.document_id)}>{result.filename}</button><span>Page {result.page_start}{result.page_end !== result.page_start ? "–" + result.page_end : ""}</span><span>Cosine {result.score.toFixed(2)}</span></div>
             <p>{result.text}</p>
           </article>)}</div>}
+        </section>
+
+        <section className="chat-panel">
+          <div className="chat-heading"><div><p className="eyebrow">DOCUMENT-GROUNDED AI</p><h3>Ask your legal documents</h3><p>Answers use retrieved passages, with source labels and page references. No source, no assumed fact.</p></div><span className="chat-mark">✳</span></div>
+          <form className="chat-form" onSubmit={submitChat}>
+            <textarea value={chatQuestion} onChange={(event) => setChatQuestion(event.target.value)} minLength={3} maxLength={2000} required rows={3} placeholder="Ask a question about the documents you have indexed…" aria-label="Question for the legal document assistant" />
+            <div className="chat-form-footer"><span>Verify legal conclusions and dates against the cited source.</span><button className="button-primary" type="submit" disabled={chatting || chatQuestion.trim().length < 3}>{chatting ? <><span className="spinner" /> Researching…</> : "Ask documents ↗"}</button></div>
+          </form>
+          {chatAnswer && <div className="chat-answer"><p className="answer-label">AI RESEARCH RESPONSE</p><div className="answer-text">{chatAnswer}</div>
+            {chatSources.length > 0 && <div className="chat-sources"><h4>Retrieved sources</h4>{chatSources.map((source) => <article className="chat-source" key={source.source_id}>
+              <div><span className="source-id">{source.source_id}</span><button onClick={() => openDocument(source.document_id)}>{source.filename}</button><span className="source-pages">Page {source.page_start}{source.page_end !== source.page_start ? "–" + source.page_end : ""}</span></div>
+              <p>{source.excerpt}</p>
+            </article>)}</div>}
+            <p className="chat-disclaimer">AI-generated research assistance, not legal advice. Check every cited passage in context.</p>
+          </div>}
         </section>
 
         <div className="library-toolbar">

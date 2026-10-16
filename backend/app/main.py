@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.services import documents as document_store
+from app.services import chat as chat_service
 from app.services import embeddings, vector_store
 from app.services.chunking import chunk_document_text
 
@@ -38,6 +39,11 @@ app.add_middleware(
 class SearchRequest(BaseModel):
     query: str = Field(min_length=3, max_length=1000)
     limit: int = Field(default=5, ge=1, le=10)
+
+
+class ChatRequest(BaseModel):
+    question: str = Field(min_length=3, max_length=2000)
+    limit: int = Field(default=5, ge=1, le=8)
 
 
 def _embedding_error(exc: Exception) -> HTTPException:
@@ -179,6 +185,59 @@ def semantic_search(request: SearchRequest) -> dict[str, object]:
         raise _embedding_error(exc) from exc
     results = vector_store.search_chunks(query_vector, limit=request.limit)
     return {"query": request.query, "items": results, "count": len(results)}
+
+
+@app.post("/api/chat", tags=["chat"])
+def legal_document_chat(request: ChatRequest) -> dict[str, object]:
+    """Answer a question from retrieved document passages and return source metadata."""
+    if vector_store.indexed_chunk_count() == 0:
+        return {
+            "answer": "I cannot answer from your documents yet because no passages have been indexed. Upload a PDF and select Index first.",
+            "sources": [],
+            "message": "No indexed documents are available.",
+        }
+    try:
+        query_vector = embeddings.embed_texts([request.question])[0]
+    except (embeddings.EmbeddingConfigurationError, embeddings.EmbeddingProviderError) as exc:
+        raise _embedding_error(exc) from exc
+
+    retrieved = vector_store.search_chunks(query_vector, limit=request.limit)
+    if not retrieved:
+        return {
+            "answer": "The indexed documents did not return a relevant passage for this question. I cannot establish an answer from the available sources.",
+            "sources": [],
+            "message": "No relevant passages were retrieved.",
+        }
+
+    sources: list[dict[str, object]] = []
+    for index, result in enumerate(retrieved, start=1):
+        sources.append({
+            "source_id": f"S{index}",
+            "document_id": result["document_id"],
+            "filename": result["filename"],
+            "page_start": result["page_start"],
+            "page_end": result["page_end"],
+            "score": result["score"],
+            "text": result["text"],
+            "excerpt": result["text"][:700],
+        })
+    try:
+        answer = chat_service.generate_answer(request.question, sources)
+    except chat_service.ChatConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except chat_service.ChatProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    public_sources = [
+        {key: source[key] for key in ("source_id", "document_id", "filename", "page_start", "page_end", "score", "excerpt")}
+        for source in sources
+    ]
+    return {
+        "question": request.question,
+        "answer": answer,
+        "sources": public_sources,
+        "disclaimer": "AI-generated research assistance. Verify the cited document passages and any legal conclusions.",
+    }
 
 
 @app.delete("/api/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["documents"])
