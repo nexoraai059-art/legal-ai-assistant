@@ -154,14 +154,35 @@ export default function App() {
     setChatSources([]);
     setError("");
     try {
-      const response = await fetch(`${API_BASE}/api/chat`, {
+      const response = await fetch(API_BASE + "/api/chat/stream", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: chatQuestion, limit: 5 }),
       });
       if (!response.ok) throw new Error(await readApiError(response));
-      const payload = await response.json();
-      setChatAnswer(payload.answer || "No answer was returned.");
-      setChatSources(payload.sources || []);
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("This browser does not support streamed responses.");
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const blocks = buffer.split("\n\n");
+        buffer = blocks.pop() || "";
+        for (const block of blocks) {
+          let eventType = "message";
+          const dataLines = [];
+          for (const line of block.split(/\r?\n/)) {
+            if (line.startsWith("event:")) eventType = line.slice(6).trim();
+            else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+          }
+          if (!dataLines.length) continue;
+          const payload = JSON.parse(dataLines.join("\n"));
+          if (eventType === "sources") setChatSources(payload);
+          else if (eventType === "token") setChatAnswer((previous) => previous + (payload.text || ""));
+          else if (eventType === "error") throw new Error(payload.detail || "The AI stream failed.");
+        }
+        if (done) break;
+      }
     } catch (err) {
       setError(err.message || "The AI chat request failed.");
     } finally {
