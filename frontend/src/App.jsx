@@ -30,6 +30,11 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [busyDelete, setBusyDelete] = useState("");
+  const [busyIndex, setBusyIndex] = useState("");
+  const [semanticQuery, setSemanticQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchMessage, setSearchMessage] = useState("");
+  const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const inputRef = useRef(null);
@@ -99,6 +104,45 @@ export default function App() {
     }
   }
 
+  async function indexDocument(item) {
+    setBusyIndex(item.id);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(`${API_BASE}/api/documents/${item.id}/index`, { method: "POST" });
+      if (!response.ok) throw new Error(await readApiError(response));
+      const result = await response.json();
+      setNotice(`Indexed ${result.filename}: ${result.chunks_indexed} searchable chunks created.`);
+      await loadDocuments();
+    } catch (err) {
+      setError(err.message || "Indexing failed. Please try again.");
+    } finally {
+      setBusyIndex("");
+    }
+  }
+
+  async function runSemanticSearch(event) {
+    event.preventDefault();
+    setSearching(true);
+    setError("");
+    setSearchMessage("");
+    setSearchResults([]);
+    try {
+      const response = await fetch(`${API_BASE}/api/search`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: semanticQuery, limit: 5 }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      const payload = await response.json();
+      setSearchResults(payload.items || []);
+      setSearchMessage(payload.message || (payload.count ? `Found ${payload.count} relevant passage(s).` : "No matching passages found. Index documents or try a different query."));
+    } catch (err) {
+      setError(err.message || "Search failed. Please try again.");
+    } finally {
+      setSearching(false);
+    }
+  }
+
   async function removeDocument(item) {
     if (!window.confirm(`Delete "${item.original_filename}" and its extracted text? This cannot be undone.`)) return;
     setBusyDelete(item.id);
@@ -150,6 +194,19 @@ export default function App() {
         {error && <div className="message message-error" role="alert"><span>!</span><div><strong>Something needs attention</strong><p>{error}</p></div><button className="message-close" onClick={() => setError("")} aria-label="Dismiss error">×</button></div>}
         {notice && <div className="message message-success" role="status"><span>✓</span><p>{notice}</p><button className="message-close" onClick={() => setNotice("")} aria-label="Dismiss notice">×</button></div>}
 
+        <section className="semantic-panel">
+          <div className="semantic-heading"><div><p className="eyebrow">RETRIEVAL WORKSPACE</p><h3>Search across your documents</h3><p>Ask a question in natural language to find related passages and page references.</p></div><span className="semantic-mark">⌕</span></div>
+          <form className="semantic-form" onSubmit={runSemanticSearch}>
+            <input value={semanticQuery} onChange={(event) => setSemanticQuery(event.target.value)} minLength={3} maxLength={1000} required placeholder="e.g. What does the contract say about termination notice?" aria-label="Semantic search query" />
+            <button className="button-primary" type="submit" disabled={searching || semanticQuery.trim().length < 3}>{searching ? <><span className="spinner" /> Searching…</> : "Find passages ↗"}</button>
+          </form>
+          {searchMessage && <p className="search-message" role="status">{searchMessage}</p>}
+          {searchResults.length > 0 && <div className="search-results">{searchResults.map((result) => <article className="search-result" key={result.document_id + "-" + result.chunk_index}>
+            <div className="result-meta"><button onClick={() => openDocument(result.document_id)}>{result.filename}</button><span>Page {result.page_start}{result.page_end !== result.page_start ? "–" + result.page_end : ""}</span><span>Cosine {result.score.toFixed(2)}</span></div>
+            <p>{result.text}</p>
+          </article>)}</div>}
+        </section>
+
         <div className="library-toolbar">
           <div><h3>Stored documents</h3><p>Files are saved to the configured local data directory.</p></div>
           <label className="search-box"><svg viewBox="0 0 24 24" fill="none"><circle cx="10.8" cy="10.8" r="6.8" stroke="currentColor" strokeWidth="1.5"/><path d="m16 16 4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search filenames" aria-label="Search filenames" /></label>
@@ -162,7 +219,7 @@ export default function App() {
             {filteredDocuments.map((item) => <tr key={item.id} className={selected?.id === item.id ? "selected-row" : ""}>
               <td><button className="document-name" onClick={() => openDocument(item.id)}><span className="pdf-badge">PDF</span><span><strong>{item.original_filename}</strong><small>{Number(item.extracted_characters || 0).toLocaleString()} extracted characters</small></span></button></td>
               <td>{item.page_count}</td><td>{formatBytes(item.size_bytes)}</td><td className="date-cell">{formatDate(item.created_at)}</td>
-              <td><button className="delete-button" onClick={() => removeDocument(item)} disabled={busyDelete === item.id} aria-label={`Delete ${item.original_filename}`}>{busyDelete === item.id ? "…" : "Delete"}</button></td>
+              <td className="row-actions"><button className="index-button" onClick={() => indexDocument(item)} disabled={busyIndex === item.id}>{busyIndex === item.id ? "Indexing…" : item.indexed ? "Re-index" : "Index"}</button><button className="delete-button" onClick={() => removeDocument(item)} disabled={busyDelete === item.id} aria-label={`Delete ${item.original_filename}`}>{busyDelete === item.id ? "…" : "Delete"}</button></td>
             </tr>)}
           </tbody></table></div>
         )}
