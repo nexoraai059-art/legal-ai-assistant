@@ -1,4 +1,5 @@
 import io
+from datetime import date, timedelta
 
 import fitz
 import pytest
@@ -6,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.core import config
 from app import main
+from app.services import cases as case_service
 from app.services import documents as document_store
 from app.services import vector_store
 from app.services.chunking import chunk_document_text
@@ -17,6 +19,7 @@ def client(tmp_path, monkeypatch):
     upload_dir = data_dir / "documents"
     monkeypatch.setattr(config.settings, "data_dir", data_dir)
     monkeypatch.setattr(document_store, "DB_PATH", data_dir / "test.sqlite3")
+    monkeypatch.setattr(case_service, "DB_PATH", data_dir / "test.sqlite3")
     monkeypatch.setattr(document_store, "UPLOAD_DIR", upload_dir)
     monkeypatch.setattr(vector_store, "CHROMA_DIR", data_dir / "chroma")
     monkeypatch.setattr(vector_store, "_client", None)
@@ -211,3 +214,79 @@ def test_chat_stream_rejects_missing_llm_configuration_before_streaming(client, 
     response = client.post("/api/chat/stream", json={"question": "What are the notice terms?"})
     assert response.status_code == 503
     assert "LLM_API_KEY" in response.json()["detail"]
+
+def test_case_deadline_reminder_notification_lifecycle(client):
+    case_response = client.post("/api/cases", json={
+        "title": "Contract dispute",
+        "case_number": "CIV-2026-101",
+        "jurisdiction": "Kerala",
+        "description": "Test case record.",
+    })
+    assert case_response.status_code == 201, case_response.text
+    case_id = case_response.json()["id"]
+
+    deadline_response = client.post("/api/deadlines", json={
+        "case_id": case_id,
+        "title": "File written response",
+        "due_date": (date.today() + timedelta(days=2)).isoformat(),
+        "remind_days_before": 3,
+        "user_confirmed": True,
+    })
+    assert deadline_response.status_code == 201, deadline_response.text
+    deadline_id = deadline_response.json()["id"]
+
+    first_run = client.post("/api/reminders/run")
+    assert first_run.status_code == 200
+    assert first_run.json()["notifications_created"] == 1
+    second_run = client.post("/api/reminders/run")
+    assert second_run.json()["notifications_created"] == 0
+
+    unread = client.get("/api/notifications?unread_only=true")
+    assert unread.status_code == 200
+    assert unread.json()["count"] == 1
+    notification_id = unread.json()["items"][0]["id"]
+    assert unread.json()["items"][0]["case_title"] == "Contract dispute"
+
+    marked_read = client.post(f"/api/notifications/{notification_id}/read")
+    assert marked_read.status_code == 200
+    assert client.get("/api/notifications?unread_only=true").json()["count"] == 0
+
+    completed = client.patch(f"/api/deadlines/{deadline_id}", json={"status": "completed"})
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "completed"
+    assert client.post("/api/reminders/run").json()["notifications_created"] == 0
+    summary = client.get("/api/dashboard/summary").json()
+    assert summary["active_cases"] == 1
+    assert summary["upcoming_deadlines"] == 0
+    assert summary["unread_notifications"] == 0
+
+
+def test_deadline_requires_user_confirmation(client):
+    case_id = client.post("/api/cases", json={"title": "Confirmed deadline case"}).json()["id"]
+    response = client.post("/api/deadlines", json={
+        "case_id": case_id,
+        "title": "Unconfirmed due date",
+        "due_date": (date.today() + timedelta(days=5)).isoformat(),
+        "user_confirmed": False,
+    })
+    assert response.status_code == 422
+    assert "Confirm the deadline date" in response.json()["detail"]
+
+
+def test_deadline_source_page_must_exist(client):
+    case_id = client.post("/api/cases", json={"title": "Source validation case"}).json()["id"]
+    upload = client.post(
+        "/api/documents",
+        files={"file": ("one-page.pdf", make_pdf("A one page legal document."), "application/pdf")},
+    )
+    document_id = upload.json()["id"]
+    response = client.post("/api/deadlines", json={
+        "case_id": case_id,
+        "title": "Source-backed filing date",
+        "due_date": (date.today() + timedelta(days=5)).isoformat(),
+        "source_document_id": document_id,
+        "source_page": 2,
+        "user_confirmed": True,
+    })
+    assert response.status_code == 422
+    assert "outside the document's page range" in response.json()["detail"]
