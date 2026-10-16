@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from app.core import config
 from app import main
 from app.services import documents as document_store
+from app.services import vector_store
+from app.services.chunking import chunk_document_text
 
 
 @pytest.fixture()
@@ -16,6 +18,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config.settings, "data_dir", data_dir)
     monkeypatch.setattr(document_store, "DB_PATH", data_dir / "test.sqlite3")
     monkeypatch.setattr(document_store, "UPLOAD_DIR", upload_dir)
+    monkeypatch.setattr(vector_store, "CHROMA_DIR", data_dir / "chroma")
+    monkeypatch.setattr(vector_store, "_client", None)
+    monkeypatch.setattr(vector_store, "_collection", None)
     with TestClient(main.app) as test_client:
         yield test_client
 
@@ -74,3 +79,51 @@ def test_rejects_fake_pdf_signature(client):
         files={"file": ("fake.pdf", b"this is not a PDF", "application/pdf")},
     )
     assert response.status_code == 400
+
+def test_chunker_preserves_page_numbers():
+    chunks = chunk_document_text("[Page 1]\\nThe first page discusses notice.\\n\\n[Page 2]\\nThe second page discusses termination.")
+    assert [chunk["page_start"] for chunk in chunks] == [1, 2]
+    assert all(chunk["page_start"] == chunk["page_end"] for chunk in chunks)
+    assert "termination" in chunks[1]["text"]
+
+
+def test_index_search_and_delete_vector_chunks(client, monkeypatch):
+    upload = client.post(
+        "/api/documents",
+        files={"file": ("terms.pdf", make_pdf("Termination requires thirty days of written notice."), "application/pdf")},
+    )
+    assert upload.status_code == 201
+    document_id = upload.json()["id"]
+
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    indexed = client.post(f"/api/documents/{document_id}/index")
+    assert indexed.status_code == 200, indexed.text
+    assert indexed.json()["chunks_indexed"] >= 1
+
+    search = client.post("/api/search", json={"query": "termination notice", "limit": 5})
+    assert search.status_code == 200, search.text
+    assert search.json()["count"] >= 1
+    assert search.json()["items"][0]["filename"] == "terms.pdf"
+    assert search.json()["items"][0]["page_start"] == 1
+
+    listing = client.get("/api/documents")
+    assert listing.json()["items"][0]["indexed"] is True
+
+    deleted = client.delete(f"/api/documents/{document_id}")
+    assert deleted.status_code == 204
+    assert vector_store.indexed_chunk_count() == 0
+
+
+def test_index_reports_missing_embedding_configuration(client, monkeypatch):
+    upload = client.post(
+        "/api/documents",
+        files={"file": ("terms.pdf", make_pdf("Payment terms appear in this agreement."), "application/pdf")},
+    )
+    document_id = upload.json()["id"]
+    monkeypatch.setattr(config.settings, "embedding_api_key", "")
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: (_ for _ in ()).throw(
+        main.embeddings.EmbeddingConfigurationError("Semantic search is not configured yet.")
+    ))
+    response = client.post(f"/api/documents/{document_id}/index")
+    assert response.status_code == 503
+    assert "not configured" in response.json()["detail"]
