@@ -19,7 +19,7 @@ on:
       - ".github/workflows/legal-datasets.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: legal-dataset-samples
@@ -49,11 +49,28 @@ jobs:
           HF_HUB_DISABLE_TELEMETRY: "1"
         run: python scripts/download_legal_datasets.py
 
+      - name: Save generated samples permanently in the repository
+        if: always()
+        run: |
+          if [ ! -d datasets/generated ]; then
+            echo "No generated dataset directory found; nothing to save."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A datasets/generated/
+          if git diff --cached --quiet; then
+            echo "No dataset sample changes to commit."
+          else
+            git commit -m "Save generated legal dataset samples"
+            git push
+          fi
+
       - name: Upload generated samples and source report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: legal-ai-dataset-samples
           path: datasets/generated/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
