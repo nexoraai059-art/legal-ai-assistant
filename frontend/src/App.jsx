@@ -229,6 +229,75 @@ export default function App() {
     return () => window.clearInterval(refresh);
   }, [loadDocuments, loadCaseData, accessToken]);
 
+  useEffect(() => {
+    if (!accessToken) return;
+    let active = true;
+    const controller = new AbortController();
+
+    async function streamNotifications() {
+      while (active) {
+        try {
+          const response = await apiFetch(API_BASE + "/api/notifications/stream", {
+            headers: { Accept: "text/event-stream" },
+            signal: controller.signal,
+          });
+          if (response.status === 401 || response.status === 403) {
+            if (active) {
+              setAuthError("Your session expired. Please sign in again.");
+              handleLogout();
+            }
+            break;
+          }
+          if (!response.ok) throw new Error(await readApiError(response));
+          if (!response.body) throw new Error("The browser does not support streamed responses.");
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          while (active) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split(/\r?\n\r?\n/);
+            buffer = blocks.pop() || "";
+            for (const block of blocks) {
+              const lines = block.split(/\r?\n/);
+              const eventName = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
+              const dataLine = lines.find((line) => line.startsWith("data:"));
+              if (eventName === "snapshot" && dataLine) {
+                const payload = JSON.parse(dataLine.slice(5).trim());
+                if (active) {
+                  setNotifications(payload.items || []);
+                  if (payload.summary) setSummary(payload.summary);
+                }
+              } else if (eventName === "error" && dataLine) {
+                const payload = JSON.parse(dataLine.slice(5).trim());
+                if (active) {
+                  setAuthError(payload.detail || "Your session expired. Please sign in again.");
+                  handleLogout();
+                }
+                active = false;
+                break;
+              }
+            }
+            if (!active) break;
+          }
+          if (!active || controller.signal.aborted) break;
+          await new Promise((resolve) => window.setTimeout(resolve, 3000));
+        } catch (err) {
+          if (!active || controller.signal.aborted) break;
+          await new Promise((resolve) => window.setTimeout(resolve, 3000));
+        }
+      }
+    }
+
+    streamNotifications();
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [accessToken]);
+
   const filteredDocuments = useMemo(() => {
     const term = search.trim().toLowerCase();
     if (!term) return documents;

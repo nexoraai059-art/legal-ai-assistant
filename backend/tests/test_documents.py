@@ -1,5 +1,7 @@
+import asyncio
 import io
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import fitz
 import pytest
@@ -715,3 +717,37 @@ def test_case_sharing_scopes_cases_deadlines_and_notifications(client):
     assert client.get("/api/cases").json()["count"] == 0
     assert client.get("/api/deadlines").json()["count"] == 0
     assert client.get("/api/notifications").json()["count"] == 0
+
+
+
+def test_notification_stream_emits_access_scoped_snapshot(client, monkeypatch):
+    monkeypatch.setattr(main, "NOTIFICATION_STREAM_INTERVAL_SECONDS", 0)
+    user = client.get("/api/auth/me").json()
+    token = client.headers["Authorization"].removeprefix("Bearer ")
+    disconnect_checks = 0
+
+    async def disconnected():
+        nonlocal disconnect_checks
+        disconnect_checks += 1
+        return disconnect_checks > 1
+
+    request = SimpleNamespace(
+        state=SimpleNamespace(user=user),
+        headers={"Authorization": "Bearer " + token},
+        is_disconnected=disconnected,
+    )
+    response = asyncio.run(main.stream_notifications(request))
+    assert response.media_type == "text/event-stream"
+    assert response.headers["cache-control"] == "no-cache"
+
+    async def collect_stream():
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        return "".join(chunks)
+
+    stream = asyncio.run(collect_stream())
+    assert "event: snapshot\n" in stream
+    assert '"items":[]' in stream
+    assert '"summary":' in stream
+    assert client.get("/api/notifications/stream", headers={"Authorization": ""}).status_code == 401
