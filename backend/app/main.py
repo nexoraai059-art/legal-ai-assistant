@@ -1,5 +1,8 @@
 from contextlib import asynccontextmanager
+import asyncio
 import json
+import logging
+from datetime import date, datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -8,19 +11,42 @@ from fastapi import FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from typing import Literal
 
 from app.core.config import settings
 from app.services import documents as document_store
+from app.services import cases as case_service
 from app.services import chat as chat_service
 from app.services import embeddings, vector_store
 from app.services.chunking import chunk_document_text
 
 
+logger = logging.getLogger(__name__)
+
+
+async def _reminder_worker() -> None:
+    while True:
+        try:
+            case_service.generate_reminder_notifications()
+        except Exception:
+            logger.exception("Background deadline reminder check failed")
+        await asyncio.sleep(300)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     document_store.initialize_storage()
+    case_service.initialize_case_storage()
     vector_store.initialize_vector_store()
-    yield
+    worker = asyncio.create_task(_reminder_worker())
+    try:
+        yield
+    finally:
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
@@ -46,6 +72,32 @@ class SearchRequest(BaseModel):
 class ChatRequest(BaseModel):
     question: str = Field(min_length=3, max_length=2000)
     limit: int = Field(default=5, ge=1, le=8)
+
+
+class CreateCaseRequest(BaseModel):
+    title: str = Field(min_length=3, max_length=180)
+    case_number: str | None = Field(default=None, max_length=120)
+    jurisdiction: str | None = Field(default=None, max_length=120)
+    description: str = Field(default="", max_length=3000)
+
+
+class CaseStatusRequest(BaseModel):
+    status: Literal["active", "closed", "archived"]
+
+
+class CreateDeadlineRequest(BaseModel):
+    case_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=3, max_length=180)
+    due_date: date
+    source_document_id: str | None = Field(default=None, max_length=64)
+    source_page: int | None = Field(default=None, ge=1)
+    notes: str = Field(default="", max_length=2000)
+    remind_days_before: int = Field(default=3, ge=0, le=30)
+    user_confirmed: bool
+
+
+class DeadlineStatusRequest(BaseModel):
+    status: Literal["pending", "completed", "cancelled"]
 
 
 def _embedding_error(exc: Exception) -> HTTPException:
@@ -290,6 +342,97 @@ def legal_document_chat_stream(request: ChatRequest) -> StreamingResponse:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/cases", status_code=status.HTTP_201_CREATED, tags=["cases"])
+def create_case(request: CreateCaseRequest) -> dict[str, object]:
+    if not request.title.strip():
+        raise HTTPException(status_code=422, detail="Case title cannot be blank.")
+    return case_service.create_case(request.model_dump())
+
+
+@app.get("/api/cases", tags=["cases"])
+def get_cases() -> dict[str, object]:
+    items = case_service.list_cases()
+    return {"items": items, "count": len(items)}
+
+
+@app.get("/api/cases/{case_id}", tags=["cases"])
+def get_case(case_id: str) -> dict[str, object]:
+    case = case_service.get_case(case_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail="Case not found.")
+    return case
+
+
+@app.patch("/api/cases/{case_id}", tags=["cases"])
+def update_case(case_id: str, request: CaseStatusRequest) -> dict[str, object]:
+    case = case_service.update_case_status(case_id, request.status)
+    if case is None:
+        raise HTTPException(status_code=404, detail="Case not found.")
+    return case
+
+
+@app.post("/api/deadlines", status_code=status.HTTP_201_CREATED, tags=["deadlines"])
+def create_deadline(request: CreateDeadlineRequest) -> dict[str, object]:
+    if not request.title.strip():
+        raise HTTPException(status_code=422, detail="Deadline title cannot be blank.")
+    try:
+        return case_service.create_deadline(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/deadlines", tags=["deadlines"])
+def get_deadlines(
+    case_id: str | None = None,
+    status: Literal["pending", "completed", "cancelled"] | None = None,
+) -> dict[str, object]:
+    items = case_service.list_deadlines(case_id=case_id, status=status)
+    return {"items": items, "count": len(items)}
+
+
+@app.patch("/api/deadlines/{deadline_id}", tags=["deadlines"])
+def update_deadline(deadline_id: str, request: DeadlineStatusRequest) -> dict[str, object]:
+    deadline = case_service.update_deadline_status(deadline_id, request.status)
+    if deadline is None:
+        raise HTTPException(status_code=404, detail="Deadline not found.")
+    return deadline
+
+
+@app.get("/api/notifications", tags=["notifications"])
+def get_notifications(unread_only: bool = False, limit: int = 50) -> dict[str, object]:
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail="Limit must be between 1 and 100.")
+    items = case_service.list_notifications(unread_only=unread_only, limit=limit)
+    return {"items": items, "count": len(items)}
+
+
+@app.post("/api/notifications/{notification_id}/read", tags=["notifications"])
+def read_notification(notification_id: str) -> dict[str, object]:
+    notification = case_service.mark_notification_read(notification_id)
+    if notification is None:
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    return notification
+
+
+@app.post("/api/reminders/run", tags=["notifications"])
+def run_reminder_check() -> dict[str, object]:
+    created = case_service.generate_reminder_notifications()
+    return {"notifications_created": created, "checked_at": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/activity", tags=["dashboard"])
+def get_activity(limit: int = 50) -> dict[str, object]:
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail="Limit must be between 1 and 100.")
+    items = case_service.list_activity(limit=limit)
+    return {"items": items, "count": len(items)}
+
+
+@app.get("/api/dashboard/summary", tags=["dashboard"])
+def get_dashboard_summary() -> dict[str, int]:
+    return case_service.dashboard_summary()
 
 
 @app.delete("/api/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["documents"])

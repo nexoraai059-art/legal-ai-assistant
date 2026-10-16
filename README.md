@@ -1,27 +1,33 @@
 # Real-Time AI Legal Research & Compliance Assistant
 
-AI-assisted legal research for document-grounded answers with citations, real-time case monitoring, compliance deadline detection, and live notifications.
+A local-first workspace for managing legal documents, retrieving relevant passages, asking source-grounded questions, tracking cases, and generating in-app deadline notifications.
 
 ## Stack
 - Frontend: React + Vite
 - Backend: Python + FastAPI
 - PDF extraction: PyMuPDF
-- Metadata: SQLite
+- Metadata and case tracking: SQLite
 - Vector retrieval: ChromaDB with cosine similarity
 - Embeddings: OpenAI-compatible hosted embeddings API (default `text-embedding-3-small`)
-- RAG orchestration: LangChain prompt + chat model integration
-- Planned real-time: FastAPI SSE/WebSockets
+- RAG orchestration: LangChain + OpenAI-compatible chat model
+- Streaming: Server-Sent Events (SSE)
 
-## Current implementation
-- FastAPI health endpoint and React workspace shell.
-- PDF upload validation, text extraction, local file storage, SHA-256 hashes, SQLite metadata, list/detail/delete APIs.
-- Page-aware text chunking with overlap and source page numbers.
-- Hosted embedding provider integration and persistent ChromaDB indexing.
-- Semantic search API and dashboard controls to index documents, search passages, and inspect page references.
-- RAG chat that retrieves passages, instructs the model to answer only from supplied excerpts, labels sources as `[S1]`, `[S2]`, and returns document/page metadata.
-- Automated backend tests for document lifecycle, chunking, indexing/search, and chat source metadata.
+## Implemented
+- PDF upload validation, extraction, local file storage, SHA-256 hashes, metadata, listing, preview, and deletion.
+- Page-aware overlapping chunks, hosted embeddings, persistent ChromaDB indexing, and semantic search.
+- Document-grounded RAG chat that provides source labels and document/page metadata; unknown source labels are removed.
+- SSE chat response streaming with source, token, completion, and error events.
+- Case register, case status, user-confirmed deadlines, source document/page association, deadline completion, and activity logs.
+- Background deadline checks every five minutes and deduplicated in-app upcoming/overdue notifications.
+- React dashboard with summary metrics, case forms, deadline management, notifications, document library, semantic search, and RAG chat.
+- Automated tests for document lifecycle, retrieval, chat citations, SSE, and deadline reminders.
 
-Not implemented yet: authentication/authorization, real-time token streaming, case tracking, reminders, notifications, and deployment hardening.
+## Still outstanding
+- Authentication, session management, and case-level authorization.
+- User/organization ownership, secure document sharing, and production audit identity.
+- OCR for scanned PDFs, email/SMS/push notifications, and calendar integrations.
+- Real-time notification push to connected browsers (current deadline notifications are persisted in-app; chat streams over SSE).
+- Automated hosted-provider evaluation, full security review, deployment, and production backup/restore.
 
 ## Windows development setup
 Open two terminals from the repository root.
@@ -59,23 +65,32 @@ cd backend
 ```
 
 ## API endpoints
-- `POST /api/documents` — multipart upload; form field `file`.
-- `GET /api/documents` — list document metadata and index status.
-- `GET /api/documents/{id}` — document metadata and extracted text.
+- `POST /api/documents` — multipart PDF upload; form field `file`.
+- `GET /api/documents` and `GET /api/documents/{id}` — document metadata and extracted text.
 - `POST /api/documents/{id}/index` — chunk, embed, and index a document.
-- `POST /api/search` — semantic search; JSON body: `{"query":"...","limit":5}`.
-- `POST /api/chat` — RAG answer with source labels and document/page references; JSON body: `{"question":"...","limit":5}`.
-- `DELETE /api/documents/{id}` — delete stored file, metadata, and vector chunks.
+- `POST /api/search` — semantic search; JSON body `{"query":"...","limit":5}`.
+- `POST /api/chat` — grounded answer with source metadata.
+- `POST /api/chat/stream` — streamed RAG answer using SSE.
+- `DELETE /api/documents/{id}` — remove the stored PDF, metadata, and vector chunks.
+- `POST /api/cases`, `GET /api/cases`, `GET /api/cases/{id}`, `PATCH /api/cases/{id}` — case management.
+- `POST /api/deadlines`, `GET /api/deadlines`, `PATCH /api/deadlines/{id}` — deadline management.
+- `GET /api/notifications`, `POST /api/notifications/{id}/read` — in-app notifications.
+- `POST /api/reminders/run` — run a reminder check immediately.
+- `GET /api/activity` — recent activity log.
+- `GET /api/dashboard/summary` — case/document/deadline summary counts.
 
 Defaults: 15 MB maximum upload and 500 pages per PDF. Change `MAX_UPLOAD_MB` and `MAX_PDF_PAGES` in the backend environment.
 
 ## Local data and privacy
 By default, PDFs, SQLite metadata, and the ChromaDB index are stored under `backend/data/`, which is ignored by Git. Stored files use generated UUID filenames, not user-provided paths. Keep this folder backed up if local persistence matters. Scanned/image-only PDFs currently need OCR, which is not yet implemented.
 
-**Security limitation:** document and chat endpoints currently have no login or case-level authorization. This is a local development milestone only. Do not expose the API publicly or upload confidential client files until authentication, authorization, and production storage protections are implemented. Hosted embeddings and chat send relevant extracted passages to the configured provider; review provider privacy and data-processing terms before confidential use.
+**Security limitation:** the API does not yet have login or case-level authorization. It is for local development only. Do not expose the API publicly or upload confidential client files until authentication, authorization, and production storage protections are implemented. Hosted embeddings and chat send extracted passages to the configured provider; review provider privacy and data-processing terms before confidential use. Do not commit `.env` files or API keys.
+
+## Deadline reliability
+The application never automatically invents or saves legal deadlines. A person must confirm the date before it can be stored. Optional source document and page references are validated against uploaded documents. Reminder generation is based only on the stored, confirmed date; independently verify all legal dates and required actions.
 
 ## Legal reliability
-The chat is instructed to answer only from retrieved excerpts, use source labels, and acknowledge missing evidence. This is not a guarantee that each generated claim is correct: verify every cited passage in context and independently confirm legal authorities and deadlines. Treat the application as research assistance, not legal advice.
+The chat is instructed to answer only from retrieved excerpts, cite source labels, and acknowledge missing evidence. This is not a guarantee that every generated claim is correct: verify each cited passage in context and independently confirm legal authorities and deadlines. Treat the application as research assistance, not legal advice.
 
 ## Dataset samples
 Benchmark samples are stored under `datasets/generated/`. Review each dataset's licence and terms before training, redistribution, or production use. These benchmark samples are not a store for private case documents.
