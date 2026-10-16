@@ -14,6 +14,7 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 
 ## Implemented
 - One-time first-admin bootstrap, login, expiring bearer tokens, PBKDF2 password hashing, role-based write permissions, admin user management, and account disabling.
+- Per-account isolation for documents, semantic retrieval, cases, deadlines, notifications, activity history, and dashboard metrics.
 - API security headers and no-store caching for API responses.
 - PDF upload validation, extraction, local file storage, SHA-256 hashes, metadata, listing, preview, and deletion.
 - Page-aware overlapping chunks, hosted embeddings, persistent ChromaDB indexing, and semantic search.
@@ -25,8 +26,8 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 - Automated tests for document lifecycle, retrieval, chat citations, SSE, and deadline reminders.
 
 ## Still outstanding
-- Case-level authorization and user/organization ownership: authenticated accounts currently share the same cases and documents.
-- Per-case sharing, password reset, MFA, refresh-token revocation, and production audit identity.
+- Per-case sharing/invitations and organization tenancy; records are isolated by account, but users cannot securely share a case with collaborators.
+- Password reset, MFA, refresh-token revocation, login rate limiting, and production audit identity.
 - OCR for scanned PDFs, email/SMS/push notifications, and calendar integrations.
 - Real-time notification push to connected browsers (current deadline notifications are persisted in-app; chat streams over SSE).
 - Automated hosted-provider evaluation, full security review, deployment, and production backup/restore.
@@ -90,7 +91,7 @@ Defaults: 15 MB maximum upload and 500 pages per PDF. Change `MAX_UPLOAD_MB` and
 ## Local data and privacy
 By default, PDFs, SQLite metadata, and the ChromaDB index are stored under `backend/data/`, which is ignored by Git. Stored files use generated UUID filenames, not user-provided paths. Keep this folder backed up if local persistence matters. Scanned/image-only PDFs currently need OCR, which is not yet implemented.
 
-**Security limitation:** login and role-based write permissions are implemented, but case-level authorization is not. All signed-in users can currently read the same case/document workspace, so this is for local development only. Do not expose the API publicly or upload confidential client files until case-level isolation and production hardening are complete. Hosted embeddings and chat send extracted passages to the configured provider; review provider privacy and data-processing terms before confidential use. Do not commit `.env` files or API keys.
+**Security limitation:** each account is isolated from other accounts' documents, search results, cases, deadlines, notifications, activity, and dashboard data. Controlled case sharing and organization tenancy are not implemented. This remains a local-development prototype; do not expose the API publicly or upload confidential client files until sharing controls and production hardening are complete. Hosted embeddings and chat send extracted passages to the configured provider; review provider privacy and data-processing terms before confidential use. Do not commit `.env` files or API keys.
 
 ## Deadline reliability
 The application never automatically invents or saves legal deadlines. A person must confirm the date before it can be stored. Optional source document and page references are validated against uploaded documents. Reminder generation is based only on the stored, confirmed date; independently verify all legal dates and required actions.

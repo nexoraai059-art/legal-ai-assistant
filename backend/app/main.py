@@ -37,8 +37,8 @@ async def _reminder_worker() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    document_store.initialize_storage()
     auth_service.initialize_auth_storage()
+    document_store.initialize_storage()
     case_service.initialize_case_storage()
     vector_store.initialize_vector_store()
     worker = asyncio.create_task(_reminder_worker())
@@ -261,7 +261,7 @@ def update_user_active(user_id: str, request: ActiveUserRequest, http_request: R
 
 
 @app.post("/api/documents", status_code=status.HTTP_201_CREATED, tags=["documents"])
-def upload_document(file: UploadFile = File(...)) -> dict[str, object]:
+def upload_document(http_request: Request, file: UploadFile = File(...)) -> dict[str, object]:
     """Validate, extract, and store a PDF using a generated storage name."""
     original_name = (file.filename or "").replace("\\", "/").split("/")[-1].strip()
     if not original_name or not original_name.lower().endswith(".pdf"):
@@ -301,6 +301,7 @@ def upload_document(file: UploadFile = File(...)) -> dict[str, object]:
     stored_path.write_bytes(content)
     record = document_store.build_document_record(
         document_id=document_id,
+        owner_id=http_request.state.user["id"],
         original_filename=original_name[:255],
         stored_filename=stored_filename,
         size_bytes=len(content),
@@ -327,25 +328,28 @@ def upload_document(file: UploadFile = File(...)) -> dict[str, object]:
 
 
 @app.get("/api/documents", tags=["documents"])
-def documents_list() -> dict[str, object]:
-    documents = document_store.list_documents()
+def documents_list(http_request: Request) -> dict[str, object]:
+    owner_id = http_request.state.user["id"]
+    documents = document_store.list_documents(owner_id)
     for document in documents:
-        document["indexed"] = vector_store.document_is_indexed(document["id"])
+        document["indexed"] = vector_store.document_is_indexed(document["id"], owner_id)
     return {"items": documents, "count": len(documents)}
 
 
 @app.get("/api/documents/{document_id}", tags=["documents"])
-def document_detail(document_id: str) -> dict[str, object]:
-    document = document_store.get_document(document_id)
+def document_detail(document_id: str, http_request: Request) -> dict[str, object]:
+    owner_id = http_request.state.user["id"]
+    document = document_store.get_document(document_id, owner_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found.")
-    document["indexed"] = vector_store.document_is_indexed(document_id)
+    document["indexed"] = vector_store.document_is_indexed(document_id, owner_id)
     return document
 
 
 @app.post("/api/documents/{document_id}/index", tags=["search"])
-def index_document(document_id: str) -> dict[str, object]:
-    document = document_store.get_document(document_id)
+def index_document(document_id: str, http_request: Request) -> dict[str, object]:
+    owner_id = http_request.state.user["id"]
+    document = document_store.get_document(document_id, owner_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found.")
     chunks = chunk_document_text(document["extracted_text"])
@@ -361,6 +365,7 @@ def index_document(document_id: str) -> dict[str, object]:
     try:
         vector_store.replace_document_chunks(
             document_id=document_id,
+            owner_id=owner_id,
             filename=document["original_filename"],
             chunks=chunks,
             embeddings=vectors,
@@ -372,21 +377,23 @@ def index_document(document_id: str) -> dict[str, object]:
 
 
 @app.post("/api/search", tags=["search"])
-def semantic_search(request: SearchRequest) -> dict[str, object]:
-    if vector_store.indexed_chunk_count() == 0:
+def semantic_search(request: SearchRequest, http_request: Request) -> dict[str, object]:
+    owner_id = http_request.state.user["id"]
+    if vector_store.indexed_chunk_count(owner_id) == 0:
         return {"query": request.query, "items": [], "count": 0, "message": "No indexed document chunks yet. Index a PDF first."}
     try:
         query_vector = embeddings.embed_texts([request.query])[0]
     except (embeddings.EmbeddingConfigurationError, embeddings.EmbeddingProviderError) as exc:
         raise _embedding_error(exc) from exc
-    results = vector_store.search_chunks(query_vector, limit=request.limit)
+    results = vector_store.search_chunks(query_vector, limit=request.limit, owner_id=owner_id)
     return {"query": request.query, "items": results, "count": len(results)}
 
 
 @app.post("/api/chat", tags=["chat"])
-def legal_document_chat(request: ChatRequest) -> dict[str, object]:
+def legal_document_chat(request: ChatRequest, http_request: Request) -> dict[str, object]:
     """Answer a question from retrieved document passages and return source metadata."""
-    if vector_store.indexed_chunk_count() == 0:
+    owner_id = http_request.state.user["id"]
+    if vector_store.indexed_chunk_count(owner_id) == 0:
         return {
             "answer": "I cannot answer from your documents yet because no passages have been indexed. Upload a PDF and select Index first.",
             "sources": [],
@@ -397,7 +404,7 @@ def legal_document_chat(request: ChatRequest) -> dict[str, object]:
     except (embeddings.EmbeddingConfigurationError, embeddings.EmbeddingProviderError) as exc:
         raise _embedding_error(exc) from exc
 
-    retrieved = vector_store.search_chunks(query_vector, limit=request.limit)
+    retrieved = vector_store.search_chunks(query_vector, limit=request.limit, owner_id=owner_id)
     if not retrieved:
         return {
             "answer": "The indexed documents did not return a relevant passage for this question. I cannot establish an answer from the available sources.",
@@ -437,15 +444,16 @@ def legal_document_chat(request: ChatRequest) -> dict[str, object]:
 
 
 @app.post("/api/chat/stream", tags=["chat"])
-def legal_document_chat_stream(request: ChatRequest) -> StreamingResponse:
+def legal_document_chat_stream(request: ChatRequest, http_request: Request) -> StreamingResponse:
     """Stream an answer using Server-Sent Events (SSE)."""
-    if vector_store.indexed_chunk_count() == 0:
+    owner_id = http_request.state.user["id"]
+    if vector_store.indexed_chunk_count(owner_id) == 0:
         raise HTTPException(status_code=409, detail="Index a document before asking questions.")
     try:
         query_vector = embeddings.embed_texts([request.question])[0]
     except (embeddings.EmbeddingConfigurationError, embeddings.EmbeddingProviderError) as exc:
         raise _embedding_error(exc) from exc
-    retrieved = vector_store.search_chunks(query_vector, limit=request.limit)
+    retrieved = vector_store.search_chunks(query_vector, limit=request.limit, owner_id=owner_id)
     if not retrieved:
         raise HTTPException(status_code=404, detail="No relevant source passages were found.")
     sources: list[dict[str, object]] = []
@@ -487,104 +495,106 @@ def legal_document_chat_stream(request: ChatRequest) -> StreamingResponse:
 
 
 @app.post("/api/cases", status_code=status.HTTP_201_CREATED, tags=["cases"])
-def create_case(request: CreateCaseRequest) -> dict[str, object]:
+def create_case(request: CreateCaseRequest, http_request: Request) -> dict[str, object]:
     if not request.title.strip():
         raise HTTPException(status_code=422, detail="Case title cannot be blank.")
-    return case_service.create_case(request.model_dump())
+    return case_service.create_case(request.model_dump(), http_request.state.user["id"])
 
 
 @app.get("/api/cases", tags=["cases"])
-def get_cases() -> dict[str, object]:
-    items = case_service.list_cases()
+def get_cases(http_request: Request) -> dict[str, object]:
+    items = case_service.list_cases(http_request.state.user["id"])
     return {"items": items, "count": len(items)}
 
 
 @app.get("/api/cases/{case_id}", tags=["cases"])
-def get_case(case_id: str) -> dict[str, object]:
-    case = case_service.get_case(case_id)
+def get_case(case_id: str, http_request: Request) -> dict[str, object]:
+    case = case_service.get_case(case_id, http_request.state.user["id"])
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found.")
     return case
 
 
 @app.patch("/api/cases/{case_id}", tags=["cases"])
-def update_case(case_id: str, request: CaseStatusRequest) -> dict[str, object]:
-    case = case_service.update_case_status(case_id, request.status)
+def update_case(case_id: str, request: CaseStatusRequest, http_request: Request) -> dict[str, object]:
+    case = case_service.update_case_status(case_id, request.status, http_request.state.user["id"])
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found.")
     return case
 
 
 @app.post("/api/deadlines", status_code=status.HTTP_201_CREATED, tags=["deadlines"])
-def create_deadline(request: CreateDeadlineRequest) -> dict[str, object]:
+def create_deadline(request: CreateDeadlineRequest, http_request: Request) -> dict[str, object]:
     if not request.title.strip():
         raise HTTPException(status_code=422, detail="Deadline title cannot be blank.")
     try:
-        return case_service.create_deadline(request.model_dump())
+        return case_service.create_deadline(request.model_dump(), http_request.state.user["id"])
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/deadlines", tags=["deadlines"])
 def get_deadlines(
+    http_request: Request,
     case_id: str | None = None,
     status: Literal["pending", "completed", "cancelled"] | None = None,
 ) -> dict[str, object]:
-    items = case_service.list_deadlines(case_id=case_id, status=status)
+    items = case_service.list_deadlines(http_request.state.user["id"], case_id=case_id, status=status)
     return {"items": items, "count": len(items)}
 
 
 @app.patch("/api/deadlines/{deadline_id}", tags=["deadlines"])
-def update_deadline(deadline_id: str, request: DeadlineStatusRequest) -> dict[str, object]:
-    deadline = case_service.update_deadline_status(deadline_id, request.status)
+def update_deadline(deadline_id: str, request: DeadlineStatusRequest, http_request: Request) -> dict[str, object]:
+    deadline = case_service.update_deadline_status(deadline_id, request.status, http_request.state.user["id"])
     if deadline is None:
         raise HTTPException(status_code=404, detail="Deadline not found.")
     return deadline
 
 
 @app.get("/api/notifications", tags=["notifications"])
-def get_notifications(unread_only: bool = False, limit: int = 50) -> dict[str, object]:
+def get_notifications(http_request: Request, unread_only: bool = False, limit: int = 50) -> dict[str, object]:
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=422, detail="Limit must be between 1 and 100.")
-    items = case_service.list_notifications(unread_only=unread_only, limit=limit)
+    items = case_service.list_notifications(http_request.state.user["id"], unread_only=unread_only, limit=limit)
     return {"items": items, "count": len(items)}
 
 
 @app.post("/api/notifications/{notification_id}/read", tags=["notifications"])
-def read_notification(notification_id: str) -> dict[str, object]:
-    notification = case_service.mark_notification_read(notification_id)
+def read_notification(notification_id: str, http_request: Request) -> dict[str, object]:
+    notification = case_service.mark_notification_read(notification_id, http_request.state.user["id"])
     if notification is None:
         raise HTTPException(status_code=404, detail="Notification not found.")
     return notification
 
 
 @app.post("/api/reminders/run", tags=["notifications"])
-def run_reminder_check() -> dict[str, object]:
-    created = case_service.generate_reminder_notifications()
+def run_reminder_check(http_request: Request) -> dict[str, object]:
+    created = case_service.generate_reminder_notifications(owner_id=http_request.state.user["id"])
     return {"notifications_created": created, "checked_at": datetime.now(timezone.utc).isoformat()}
 
 
 @app.get("/api/activity", tags=["dashboard"])
-def get_activity(limit: int = 50) -> dict[str, object]:
+def get_activity(http_request: Request, limit: int = 50) -> dict[str, object]:
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=422, detail="Limit must be between 1 and 100.")
-    items = case_service.list_activity(limit=limit)
+    items = case_service.list_activity(http_request.state.user["id"], limit=limit)
     return {"items": items, "count": len(items)}
 
 
 @app.get("/api/dashboard/summary", tags=["dashboard"])
-def get_dashboard_summary() -> dict[str, int]:
-    return case_service.dashboard_summary()
+def get_dashboard_summary(http_request: Request) -> dict[str, int]:
+    return case_service.dashboard_summary(http_request.state.user["id"])
 
 
 @app.delete("/api/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["documents"])
-def document_delete(document_id: str) -> None:
-    if document_store.get_document(document_id) is None:
+def document_delete(document_id: str, http_request: Request) -> None:
+    owner_id = http_request.state.user["id"]
+    if document_store.get_document(document_id, owner_id) is None:
         raise HTTPException(status_code=404, detail="Document not found.")
     try:
         vector_store.remove_document_chunks(document_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail="The document index could not be removed.") from exc
-    if not document_store.delete_document(document_id):
+    if not document_store.delete_document(document_id, owner_id):
         raise HTTPException(status_code=404, detail="Document not found.")
     return None

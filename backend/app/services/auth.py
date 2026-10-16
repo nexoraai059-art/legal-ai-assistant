@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import sqlite3
@@ -18,6 +19,7 @@ from app.core.config import settings
 DB_PATH = settings.data_dir / "legal_ai.sqlite3"
 PBKDF2_ITERATIONS = 310_000
 DEV_SIGNING_KEY = secrets.token_bytes(32)
+logger = logging.getLogger(__name__)
 ALLOWED_ROLES = {"admin", "lawyer", "assistant", "viewer"}
 
 
@@ -129,15 +131,33 @@ def _create_user_in_connection(connection: sqlite3.Connection, *, email: str, fu
     return _public_user(row)
 
 
+def _claim_legacy_data(connection: sqlite3.Connection, owner_id: str) -> None:
+    """Assign records created before login existed to the first administrator."""
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for table in ("documents", "cases", "activity_logs"):
+        if table not in tables:
+            continue
+        columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if "owner_id" in columns:
+            connection.execute(f"UPDATE {table} SET owner_id = ? WHERE owner_id = 'legacy'", (owner_id,))
+
+
 def bootstrap_admin(*, email: str, full_name: str, password: str) -> dict[str, Any] | None:
     """Atomically create the first administrator only; subsequent calls are rejected."""
     with _connect() as connection:
         connection.execute("BEGIN IMMEDIATE")
         if connection.execute("SELECT COUNT(*) FROM users").fetchone()[0] > 0:
             return None
-        return _create_user_in_connection(
+        user = _create_user_in_connection(
             connection, email=email, full_name=full_name, password=password, role="admin"
         )
+        _claim_legacy_data(connection, user["id"])
+    try:
+        from app.services import vector_store
+        vector_store.reassign_owner("legacy", user["id"])
+    except Exception:
+        logger.exception("Could not migrate legacy vector ownership; re-index existing documents")
+    return user
 
 
 def create_user(*, email: str, full_name: str, password: str, role: str) -> dict[str, Any]:

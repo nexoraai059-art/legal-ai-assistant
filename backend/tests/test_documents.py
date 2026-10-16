@@ -159,9 +159,9 @@ def test_chat_returns_answer_with_document_page_sources(client, monkeypatch):
         files={"file": ("agreement.pdf", make_pdf("The supplier must provide thirty days written notice."), "application/pdf")},
     )
     document_id = upload.json()["id"]
-    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda: 1)
+    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None: 1)
     monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
-    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit: [{
+    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None: [{
         "document_id": document_id,
         "filename": "agreement.pdf",
         "page_start": 1,
@@ -182,9 +182,9 @@ def test_chat_returns_answer_with_document_page_sources(client, monkeypatch):
 
 
 def test_chat_requires_llm_configuration(client, monkeypatch):
-    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda: 1)
+    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None: 1)
     monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
-    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit: [{
+    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None: [{
         "document_id": "doc-1", "filename": "agreement.pdf", "page_start": 1,
         "page_end": 1, "chunk_index": 0, "score": 0.8, "text": "[Page 1] notice terms",
     }])
@@ -205,9 +205,9 @@ def test_chat_removes_unknown_source_labels():
     assert "[unverified source reference omitted]" in validated
 
 def test_chat_stream_sends_sse_source_token_and_done_events(client, monkeypatch):
-    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda: 1)
+    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None: 1)
     monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
-    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit: [{
+    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None: [{
         "document_id": "doc-1", "filename": "notice.pdf", "page_start": 2,
         "page_end": 2, "chunk_index": 0, "score": 0.9, "text": "[Page 2] Written notice is required.",
     }])
@@ -225,9 +225,9 @@ def test_chat_stream_sends_sse_source_token_and_done_events(client, monkeypatch)
 
 
 def test_chat_stream_rejects_missing_llm_configuration_before_streaming(client, monkeypatch):
-    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda: 1)
+    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None: 1)
     monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
-    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit: [{
+    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None: [{
         "document_id": "doc-1", "filename": "notice.pdf", "page_start": 1,
         "page_end": 1, "chunk_index": 0, "score": 0.9, "text": "[Page 1] Notice terms.",
     }])
@@ -378,3 +378,140 @@ def test_admin_cannot_disable_the_only_active_admin(client):
     user = client.get("/api/auth/me").json()
     response = client.patch(f"/api/auth/users/{user['id']}/active", json={"is_active": False})
     assert response.status_code == 400
+
+def test_users_only_access_their_own_case_and_document_data(client, monkeypatch):
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    admin_user = client.get("/api/auth/me").json()
+    admin_id = admin_user["id"]
+    admin_authorization = client.headers["Authorization"]
+
+    admin_upload = client.post(
+        "/api/documents",
+        files={"file": ("admin-private.pdf", make_pdf("Admin-only contract notice."), "application/pdf")},
+    )
+    assert admin_upload.status_code == 201, admin_upload.text
+    admin_document_id = admin_upload.json()["id"]
+    assert client.post(f"/api/documents/{admin_document_id}/index").status_code == 200
+
+    admin_case_response = client.post("/api/cases", json={"title": "Admin private case"})
+    assert admin_case_response.status_code == 201, admin_case_response.text
+    admin_case_id = admin_case_response.json()["id"]
+    admin_deadline_response = client.post("/api/deadlines", json={
+        "case_id": admin_case_id,
+        "title": "Admin private filing",
+        "due_date": (date.today() + timedelta(days=2)).isoformat(),
+        "source_document_id": admin_document_id,
+        "source_page": 1,
+        "user_confirmed": True,
+    })
+    assert admin_deadline_response.status_code == 201, admin_deadline_response.text
+    admin_deadline_id = admin_deadline_response.json()["id"]
+
+    new_user = client.post("/api/auth/users", json={
+        "full_name": "Private Case Lawyer",
+        "email": "lawyer-private@example.test",
+        "password": "PrivateLawyerPassword123!",
+        "role": "lawyer",
+    })
+    assert new_user.status_code == 201, new_user.text
+    lawyer_id = new_user.json()["id"]
+    login = client.post("/api/auth/login", data={
+        "username": "lawyer-private@example.test",
+        "password": "PrivateLawyerPassword123!",
+    })
+    assert login.status_code == 200
+    lawyer_authorization = "Bearer " + login.json()["access_token"]
+    client.headers.update({"Authorization": lawyer_authorization})
+
+    assert client.get("/api/documents").json()["count"] == 0
+    assert client.get(f"/api/documents/{admin_document_id}").status_code == 404
+    assert client.post(f"/api/documents/{admin_document_id}/index").status_code == 404
+    assert client.delete(f"/api/documents/{admin_document_id}").status_code == 404
+    assert client.get("/api/cases").json()["count"] == 0
+    assert client.get(f"/api/cases/{admin_case_id}").status_code == 404
+    assert client.patch(f"/api/cases/{admin_case_id}", json={"status": "closed"}).status_code == 404
+    assert client.get("/api/deadlines").json()["count"] == 0
+    assert client.get(f"/api/deadlines?case_id={admin_case_id}").json()["count"] == 0
+    assert client.patch(f"/api/deadlines/{admin_deadline_id}", json={"status": "completed"}).status_code == 404
+    assert client.post("/api/search", json={"query": "contract notice"}).json()["count"] == 0
+    assert client.get("/api/dashboard/summary").json()["documents"] == 0
+    assert client.get("/api/dashboard/summary").json()["active_cases"] == 0
+
+    lawyer_upload = client.post(
+        "/api/documents",
+        files={"file": ("lawyer-private.pdf", make_pdf("Lawyer-only contract termination."), "application/pdf")},
+    )
+    assert lawyer_upload.status_code == 201, lawyer_upload.text
+    lawyer_document_id = lawyer_upload.json()["id"]
+    assert client.post(f"/api/documents/{lawyer_document_id}/index").status_code == 200
+    lawyer_case_response = client.post("/api/cases", json={"title": "Lawyer private case"})
+    assert lawyer_case_response.status_code == 201, lawyer_case_response.text
+    lawyer_case_id = lawyer_case_response.json()["id"]
+    lawyer_deadline_response = client.post("/api/deadlines", json={
+        "case_id": lawyer_case_id,
+        "title": "Lawyer private filing",
+        "due_date": (date.today() + timedelta(days=2)).isoformat(),
+        "source_document_id": lawyer_document_id,
+        "source_page": 1,
+        "user_confirmed": True,
+    })
+    assert lawyer_deadline_response.status_code == 201, lawyer_deadline_response.text
+
+    client.headers.update({"Authorization": admin_authorization})
+    reminder_run = client.post("/api/reminders/run")
+    assert reminder_run.status_code == 200
+    admin_notifications = client.get("/api/notifications").json()["items"]
+    assert len(admin_notifications) == 1
+    admin_notification_id = admin_notifications[0]["id"]
+    # The background worker processes all accounts independently of the admin's scoped manual check.
+    assert case_service.generate_reminder_notifications() == 1
+    assert client.get("/api/documents").json()["count"] == 1
+    assert client.get("/api/cases").json()["count"] == 1
+    assert client.get("/api/deadlines").json()["count"] == 1
+    assert client.get(f"/api/documents/{lawyer_document_id}").status_code == 404
+    assert client.get(f"/api/cases/{lawyer_case_id}").status_code == 404
+    assert client.get("/api/dashboard/summary").json()["documents"] == 1
+
+    client.headers.update({"Authorization": lawyer_authorization})
+    assert client.get("/api/documents").json()["items"][0]["id"] == lawyer_document_id
+    assert client.get("/api/cases").json()["items"][0]["id"] == lawyer_case_id
+    assert client.get("/api/deadlines").json()["items"][0]["case_id"] == lawyer_case_id
+    lawyer_notifications = client.get("/api/notifications").json()["items"]
+    assert len(lawyer_notifications) == 1
+    assert client.post(f"/api/notifications/{admin_notification_id}/read").status_code == 404
+    search = client.post("/api/search", json={"query": "contract termination"})
+    assert search.status_code == 200
+    assert [item["filename"] for item in search.json()["items"]] == ["lawyer-private.pdf"]
+    activity = client.get("/api/activity").json()["items"]
+    assert activity and all(item["owner_id"] == lawyer_id for item in activity)
+
+
+def test_vector_store_backfills_legacy_chunk_ownership(client):
+    upload = client.post(
+        "/api/documents",
+        files={"file": ("legacy-index.pdf", make_pdf("Legacy indexed passage."), "application/pdf")},
+    )
+    assert upload.status_code == 201, upload.text
+    document_id = upload.json()["id"]
+    owner_id = client.get("/api/auth/me").json()["id"]
+    collection = vector_store._get_collection()
+    legacy_chunk_id = document_id + ":legacy"
+    collection.upsert(
+        ids=[legacy_chunk_id],
+        embeddings=[[1.0, 0.0]],
+        documents=["Legacy indexed passage."],
+        metadatas=[{
+            "document_id": document_id,
+            "filename": "legacy-index.pdf",
+            "page_start": 1,
+            "page_end": 1,
+            "chunk_index": 0,
+            "embedding_model": "old-model",
+        }],
+    )
+
+    vector_store._migrate_chunk_owners()
+    migrated = collection.get(where={"owner_id": owner_id}, include=["metadatas"])
+    assert legacy_chunk_id in migrated["ids"]
+    migrated_metadata = migrated["metadatas"][migrated["ids"].index(legacy_chunk_id)]
+    assert migrated_metadata["owner_id"] == owner_id
