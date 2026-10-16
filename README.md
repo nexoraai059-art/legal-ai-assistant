@@ -21,6 +21,7 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 - Page-aware overlapping chunks, hosted embeddings, persistent ChromaDB indexing, and semantic search.
 - Document-grounded RAG chat that provides source labels and document/page metadata; unknown source labels are removed.
 - SSE chat response streaming with source, token, completion, and error events.
+- Real-time notification SSE snapshots with reconnecting browser clients, per-account access filtering, and session revalidation while streams remain open.
 - Case register, case status, user-confirmed deadlines, source document/page association, deadline completion, and activity logs.
 - Background deadline checks every five minutes and deduplicated in-app upcoming/overdue notifications.
 - React dashboard with summary metrics, case forms, deadline management, notifications, document library, semantic search, and RAG chat.
@@ -30,7 +31,7 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 - Organization tenancy and cross-organization access policies; case and document sharing grants access to individual active accounts within the same local user store.
 - Password reset, MFA, refresh-token revocation, and production audit identity.
 - OCR for scanned PDFs, email/SMS/push notifications, and calendar integrations.
-- Real-time notification push to connected browsers (current deadline notifications are persisted in-app; chat streams over SSE).
+- WebSocket transport (chat and notification streaming currently use Server-Sent Events, SSE).
 - Automated hosted-provider evaluation, full security review, deployment, and production backup/restore.
 
 ## Windows development setup
@@ -84,7 +85,7 @@ cd backend
 - `POST /api/cases`, `GET /api/cases`, `GET /api/cases/{id}`, `PATCH /api/cases/{id}` — case management.
 - `GET/POST /api/cases/{id}/shares` and `DELETE /api/cases/{id}/shares/{user_id}` — owner-controlled case sharing.
 - `POST /api/deadlines`, `GET /api/deadlines`, `PATCH /api/deadlines/{id}` — deadline management.
-- `GET /api/notifications`, `POST /api/notifications/{id}/read` — in-app notifications.
+- `GET /api/notifications`, `GET /api/notifications/stream`, `POST /api/notifications/{id}/read` — in-app notifications and real-time SSE updates.
 - `POST /api/reminders/run` — run a reminder check immediately.
 - `GET /api/activity` — recent activity log.
 - `GET /api/dashboard/summary` — case/document/deadline summary counts.
