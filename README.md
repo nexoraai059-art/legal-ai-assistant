@@ -15,6 +15,7 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 ## Implemented
 - One-time first-admin bootstrap, login, expiring bearer tokens, PBKDF2 password hashing, role-based write permissions, admin user management, and account disabling.
 - Per-account isolation for documents, semantic retrieval, cases, deadlines, notifications, activity history, and dashboard metrics.
+- Owner-managed document sharing by active account email, with read-only or indexing permission and immediate revocation.
 - API security headers, no-store caching for API responses, and per-IP failed-login throttling (10 attempts per 15 minutes by default).
 - PDF upload validation, extraction, local file storage, SHA-256 hashes, metadata, listing, preview, and deletion.
 - Page-aware overlapping chunks, hosted embeddings, persistent ChromaDB indexing, and semantic search.
@@ -73,6 +74,7 @@ cd backend
 - `POST /api/auth/login`, `GET /api/auth/me` — sign in and current account.
 - `GET /api/auth/users`, `POST /api/auth/users`, `PATCH /api/auth/users/{id}/active` — admin account management.
 - `POST /api/documents` — multipart PDF upload; form field `file`.
+- `GET /api/documents/{id}/shares`, `POST /api/documents/{id}/shares`, `DELETE /api/documents/{id}/shares/{user_id}` — owner-managed document sharing.
 - `GET /api/documents` and `GET /api/documents/{id}` — document metadata and extracted text.
 - `POST /api/documents/{id}/index` — chunk, embed, and index a document.
 - `POST /api/search` — semantic search; JSON body `{"query":"...","limit":5}`.
@@ -91,7 +93,7 @@ Defaults: 15 MB maximum upload and 500 pages per PDF. Change `MAX_UPLOAD_MB` and
 ## Local data and privacy
 By default, PDFs, SQLite metadata, and the ChromaDB index are stored under `backend/data/`, which is ignored by Git. Stored files use generated UUID filenames, not user-provided paths. Keep this folder backed up if local persistence matters. Scanned/image-only PDFs currently need OCR, which is not yet implemented.
 
-**Security limitation:** each account is isolated from other accounts' documents, search results, cases, deadlines, notifications, activity, and dashboard data. Controlled case sharing and organization tenancy are not implemented. This remains a local-development prototype; do not expose the API publicly or upload confidential client files until sharing controls and production hardening are complete. Hosted embeddings and chat send extracted passages to the configured provider; review provider privacy and data-processing terms before confidential use. Do not commit `.env` files or API keys.
+**Security limitation:** each account is isolated from other accounts' documents, search results, cases, deadlines, notifications, activity, and dashboard data. Documents can be shared with explicit read-only or indexing permission, but controlled case sharing and organization tenancy are not implemented. This remains a local-development prototype; do not expose the API publicly or upload confidential client files until case-sharing and production hardening are complete. Hosted embeddings and chat send extracted passages to the configured provider; review provider privacy and data-processing terms before confidential use. Do not commit `.env` files or API keys.
 
 ## Deadline reliability
 The application never automatically invents or saves legal deadlines. A person must confirm the date before it can be stored. Optional source document and page references are validated against uploaded documents. Reminder generation is based only on the stored, confirmed date; independently verify all legal dates and required actions.

@@ -236,3 +236,37 @@ h2 { margin: 0; font: 400 clamp(30px, 4vw, 42px)/1.15 var(--serif); letter-spaci
   .search-box { width: 100%; }
   .upload-panel .button-primary { width: calc(100% - 64px); margin-left: 64px; }
 }
+
+.shared-label { color: var(--orange) !important; }
+.share-button { padding: 6px 8px; border: 1px solid #d8d5ca; background: #f6e8e1; color: #8b4834; font-size: 10px; }
+.share-button:hover:not(:disabled) { background: #f0d8ce; }
+.share-panel { margin: 18px 22px 0; padding: 20px; border: 1px solid var(--line); background: #fbfaf6; }
+.share-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.share-panel-heading .eyebrow { margin-bottom: 5px; }
+.share-panel-heading h4 { margin: 0 0 5px; font: 400 22px var(--serif); }
+.share-panel-heading p:last-child { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.share-lock { padding: 5px 7px; border: 1px solid #c8d9cd; color: var(--green); font: 9px var(--mono); letter-spacing: .08em; }
+.share-form { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(135px, .65fr) auto; align-items: end; gap: 12px; margin: 18px 0 20px; }
+.share-form label { display: flex; flex-direction: column; gap: 6px; color: #5d6058; font-size: 10px; font-weight: 600; }
+.share-form input, .share-form select { width: 100%; min-width: 0; height: 42px; padding: 0 10px; border: 1px solid #d8d5ca; border-radius: 0; background: var(--white); color: var(--ink); font-size: 11px; }
+.share-form .button-primary { min-height: 42px; }
+.share-list { border-top: 1px solid var(--line); }
+.share-list h5 { display: flex; align-items: center; gap: 8px; margin: 14px 0 8px; font-size: 11px; }
+.share-list h5 span { display: grid; place-items: center; min-width: 20px; height: 20px; border-radius: 50%; background: #ece9df; color: var(--muted); font: 10px var(--mono); }
+.share-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid #eeece5; }
+.share-row > div:first-child { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.share-row strong { font-size: 11px; font-weight: 600; }
+.share-row small { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.share-row-actions { display: flex; align-items: center; gap: 10px; }
+.share-note, .subtle-copy { margin: 13px 0 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+@media (max-width: 760px) {
+  .share-form { grid-template-columns: 1fr 1fr; }
+  .share-form .button-primary { grid-column: 1 / -1; }
+  .share-panel { margin: 12px; padding: 15px; }
+}
+@media (max-width: 480px) {
+  .share-form { grid-template-columns: 1fr; }
+  .share-form .button-primary { grid-column: auto; width: 100%; }
+  .share-row { align-items: flex-start; flex-direction: column; }
+  .share-row-actions { width: 100%; justify-content: space-between; }
+}

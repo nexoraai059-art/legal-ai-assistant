@@ -304,7 +304,11 @@ def dashboard_summary(owner_id: str) -> dict[str, int]:
     week_end = (today + timedelta(days=7)).isoformat()
     with _connect() as connection:
         cases_count = connection.execute("SELECT COUNT(*) FROM cases WHERE status = 'active' AND owner_id = ?", (owner_id,)).fetchone()[0]
-        documents_count = connection.execute("SELECT COUNT(*) FROM documents WHERE owner_id = ?", (owner_id,)).fetchone()[0]
+        documents_count = connection.execute(
+            """SELECT COUNT(DISTINCT d.id) FROM documents d
+               LEFT JOIN document_shares s ON s.document_id = d.id AND s.user_id = ?
+               WHERE d.owner_id = ? OR s.user_id = ?""", (owner_id, owner_id, owner_id)
+        ).fetchone()[0]
         upcoming = connection.execute(
             """SELECT COUNT(*) FROM deadlines d JOIN cases c ON c.id = d.case_id
                WHERE c.owner_id = ? AND d.status = 'pending' AND d.due_date >= ? AND d.due_date <= ?""",

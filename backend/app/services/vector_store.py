@@ -98,9 +98,15 @@ def replace_document_chunks(document_id: str, owner_id: str, filename: str, chun
     )
 
 
-def search_chunks(query_embedding: list[float], limit: int = 5, owner_id: str | None = None) -> list[dict[str, Any]]:
+def search_chunks(query_embedding: list[float], limit: int = 5, owner_id: str | None = None,
+                  document_ids: list[str] | None = None) -> list[dict[str, Any]]:
     collection = _get_collection()
-    where = {"owner_id": owner_id} if owner_id is not None else None
+    if document_ids is not None:
+        if not document_ids:
+            return []
+        where = {"document_id": {"$in": document_ids}}
+    else:
+        where = {"owner_id": owner_id} if owner_id is not None else None
     if where:
         count = len(collection.get(where=where, include=[]).get("ids", []))
     else:
@@ -137,8 +143,12 @@ def remove_document_chunks(document_id: str) -> None:
     collection.delete(where={"document_id": document_id})
 
 
-def indexed_chunk_count(owner_id: str | None = None) -> int:
+def indexed_chunk_count(owner_id: str | None = None, document_ids: list[str] | None = None) -> int:
     collection = _get_collection()
+    if document_ids is not None:
+        if not document_ids:
+            return 0
+        return len(collection.get(where={"document_id": {"$in": document_ids}}, include=[]).get("ids", []))
     if owner_id is None:
         return int(collection.count())
     return len(collection.get(where={"owner_id": owner_id}, include=[]).get("ids", []))

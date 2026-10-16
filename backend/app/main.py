@@ -93,7 +93,7 @@ async def enforce_api_auth(request: Request, call_next):
         required_roles = {"admin", "lawyer", "assistant"}
     elif path.startswith("/api/documents/") and path.endswith("/index") and method == "POST":
         required_roles = {"admin", "lawyer", "assistant"}
-    elif path.startswith("/api/documents/") and method == "DELETE":
+    elif path.startswith("/api/documents/") and path.count("/") == 3 and method == "DELETE":
         required_roles = {"admin", "lawyer"}
     elif path == "/api/cases" and method == "POST":
         required_roles = {"admin", "lawyer"}
@@ -137,6 +137,11 @@ class CreateUserRequest(BaseModel):
 
 class ActiveUserRequest(BaseModel):
     is_active: bool
+
+
+class ShareDocumentRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    permission: Literal["read", "write"] = "read"
 
 
 class SearchRequest(BaseModel):
@@ -342,7 +347,7 @@ def documents_list(http_request: Request) -> dict[str, object]:
     owner_id = http_request.state.user["id"]
     documents = document_store.list_documents(owner_id)
     for document in documents:
-        document["indexed"] = vector_store.document_is_indexed(document["id"], owner_id)
+        document["indexed"] = vector_store.document_is_indexed(document["id"])
     return {"items": documents, "count": len(documents)}
 
 
@@ -352,8 +357,40 @@ def document_detail(document_id: str, http_request: Request) -> dict[str, object
     document = document_store.get_document(document_id, owner_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found.")
-    document["indexed"] = vector_store.document_is_indexed(document_id, owner_id)
+    document["indexed"] = vector_store.document_is_indexed(document_id)
+    document.pop("owner_id", None)
     return document
+
+
+@app.get("/api/documents/{document_id}/shares", tags=["documents"])
+def list_document_shares(document_id: str, http_request: Request) -> dict[str, object]:
+    shares = document_store.list_document_shares(document_id, http_request.state.user["id"])
+    if shares is None:
+        raise HTTPException(status_code=404, detail="Document not found or you are not its owner.")
+    return {"items": shares, "count": len(shares)}
+
+
+@app.post("/api/documents/{document_id}/shares", status_code=status.HTTP_201_CREATED, tags=["documents"])
+def create_document_share(
+    document_id: str,
+    request: ShareDocumentRequest,
+    http_request: Request,
+) -> dict[str, object]:
+    try:
+        return document_store.share_document(
+            document_id, http_request.state.user["id"], request.email, request.permission
+        )
+    except ValueError as exc:
+        if str(exc).startswith("Document not found"):
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/api/documents/{document_id}/shares/{user_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["documents"])
+def delete_document_share(document_id: str, user_id: str, http_request: Request) -> None:
+    if not document_store.revoke_document_share(document_id, http_request.state.user["id"], user_id):
+        raise HTTPException(status_code=404, detail="Document share not found.")
+    return None
 
 
 @app.post("/api/documents/{document_id}/index", tags=["search"])
@@ -362,6 +399,8 @@ def index_document(document_id: str, http_request: Request) -> dict[str, object]
     document = document_store.get_document(document_id, owner_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found.")
+    if document["access_level"] == "read":
+        raise HTTPException(status_code=403, detail="This shared document has read-only access.")
     chunks = chunk_document_text(document["extracted_text"])
     if not chunks:
         raise HTTPException(
@@ -375,7 +414,7 @@ def index_document(document_id: str, http_request: Request) -> dict[str, object]
     try:
         vector_store.replace_document_chunks(
             document_id=document_id,
-            owner_id=owner_id,
+            owner_id=document["owner_id"],
             filename=document["original_filename"],
             chunks=chunks,
             embeddings=vectors,
@@ -389,13 +428,14 @@ def index_document(document_id: str, http_request: Request) -> dict[str, object]
 @app.post("/api/search", tags=["search"])
 def semantic_search(request: SearchRequest, http_request: Request) -> dict[str, object]:
     owner_id = http_request.state.user["id"]
-    if vector_store.indexed_chunk_count(owner_id) == 0:
+    document_ids = [item["id"] for item in document_store.list_documents(owner_id)]
+    if vector_store.indexed_chunk_count(document_ids=document_ids) == 0:
         return {"query": request.query, "items": [], "count": 0, "message": "No indexed document chunks yet. Index a PDF first."}
     try:
         query_vector = embeddings.embed_texts([request.query])[0]
     except (embeddings.EmbeddingConfigurationError, embeddings.EmbeddingProviderError) as exc:
         raise _embedding_error(exc) from exc
-    results = vector_store.search_chunks(query_vector, limit=request.limit, owner_id=owner_id)
+    results = vector_store.search_chunks(query_vector, limit=request.limit, document_ids=document_ids)
     return {"query": request.query, "items": results, "count": len(results)}
 
 
@@ -403,7 +443,8 @@ def semantic_search(request: SearchRequest, http_request: Request) -> dict[str, 
 def legal_document_chat(request: ChatRequest, http_request: Request) -> dict[str, object]:
     """Answer a question from retrieved document passages and return source metadata."""
     owner_id = http_request.state.user["id"]
-    if vector_store.indexed_chunk_count(owner_id) == 0:
+    document_ids = [item["id"] for item in document_store.list_documents(owner_id)]
+    if vector_store.indexed_chunk_count(document_ids=document_ids) == 0:
         return {
             "answer": "I cannot answer from your documents yet because no passages have been indexed. Upload a PDF and select Index first.",
             "sources": [],
@@ -414,7 +455,7 @@ def legal_document_chat(request: ChatRequest, http_request: Request) -> dict[str
     except (embeddings.EmbeddingConfigurationError, embeddings.EmbeddingProviderError) as exc:
         raise _embedding_error(exc) from exc
 
-    retrieved = vector_store.search_chunks(query_vector, limit=request.limit, owner_id=owner_id)
+    retrieved = vector_store.search_chunks(query_vector, limit=request.limit, document_ids=document_ids)
     if not retrieved:
         return {
             "answer": "The indexed documents did not return a relevant passage for this question. I cannot establish an answer from the available sources.",
@@ -457,13 +498,14 @@ def legal_document_chat(request: ChatRequest, http_request: Request) -> dict[str
 def legal_document_chat_stream(request: ChatRequest, http_request: Request) -> StreamingResponse:
     """Stream an answer using Server-Sent Events (SSE)."""
     owner_id = http_request.state.user["id"]
-    if vector_store.indexed_chunk_count(owner_id) == 0:
+    document_ids = [item["id"] for item in document_store.list_documents(owner_id)]
+    if vector_store.indexed_chunk_count(document_ids=document_ids) == 0:
         raise HTTPException(status_code=409, detail="Index a document before asking questions.")
     try:
         query_vector = embeddings.embed_texts([request.question])[0]
     except (embeddings.EmbeddingConfigurationError, embeddings.EmbeddingProviderError) as exc:
         raise _embedding_error(exc) from exc
-    retrieved = vector_store.search_chunks(query_vector, limit=request.limit, owner_id=owner_id)
+    retrieved = vector_store.search_chunks(query_vector, limit=request.limit, document_ids=document_ids)
     if not retrieved:
         raise HTTPException(status_code=404, detail="No relevant source passages were found.")
     sources: list[dict[str, object]] = []
@@ -599,8 +641,11 @@ def get_dashboard_summary(http_request: Request) -> dict[str, int]:
 @app.delete("/api/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["documents"])
 def document_delete(document_id: str, http_request: Request) -> None:
     owner_id = http_request.state.user["id"]
-    if document_store.get_document(document_id, owner_id) is None:
+    document = document_store.get_document(document_id, owner_id)
+    if document is None:
         raise HTTPException(status_code=404, detail="Document not found.")
+    if document["access_level"] != "owner":
+        raise HTTPException(status_code=403, detail="Only the document owner can delete it.")
     try:
         vector_store.remove_document_chunks(document_id)
     except Exception as exc:
