@@ -53,6 +53,12 @@ export default function App() {
   const [shareBusy, setShareBusy] = useState(false);
   const [sharesLoading, setSharesLoading] = useState(false);
   const [busyShareRevoke, setBusyShareRevoke] = useState("");
+  const [caseShares, setCaseShares] = useState([]);
+  const [caseShareEmail, setCaseShareEmail] = useState("");
+  const [caseSharePermission, setCaseSharePermission] = useState("read");
+  const [caseSharesLoading, setCaseSharesLoading] = useState(false);
+  const [caseShareBusy, setCaseShareBusy] = useState(false);
+  const [busyCaseShareRevoke, setBusyCaseShareRevoke] = useState("");
   const [documents, setDocuments] = useState([]);
   const [selected, setSelected] = useState(null);
   const [search, setSearch] = useState("");
@@ -86,6 +92,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const inputRef = useRef(null);
+  const selectedCase = cases.find((item) => item.id === selectedCaseId) || null;
 
   useEffect(() => {
     let active = true;
@@ -155,6 +162,9 @@ export default function App() {
     setDocumentShares([]);
     setShareEmail("");
     setSharePermission("read");
+    setCaseShares([]);
+    setCaseShareEmail("");
+    setCaseSharePermission("read");
     setCases([]);
     setDeadlines([]);
     setNotifications([]);
@@ -269,6 +279,30 @@ export default function App() {
     return () => { active = false; };
   }, [accessToken, selected?.id, selected?.access_level]);
 
+  useEffect(() => {
+    let active = true;
+    async function loadCaseShares() {
+      if (!accessToken || !selectedCase?.id || selectedCase.access_level !== "owner") {
+        setCaseShares([]);
+        setCaseSharesLoading(false);
+        return;
+      }
+      setCaseSharesLoading(true);
+      try {
+        const response = await apiFetch(`${API_BASE}/api/cases/${selectedCase.id}/shares`);
+        if (!response.ok) throw new Error(await readApiError(response));
+        const payload = await response.json();
+        if (active) setCaseShares(payload.items || []);
+      } catch (err) {
+        if (active) setError("Could not load case access. " + err.message);
+      } finally {
+        if (active) setCaseSharesLoading(false);
+      }
+    }
+    loadCaseShares();
+    return () => { active = false; };
+  }, [accessToken, selectedCase?.id, selectedCase?.access_level]);
+
   async function shareDocument(event) {
     event.preventDefault();
     if (!selected?.id) return;
@@ -313,6 +347,53 @@ export default function App() {
       setError(err.message || "Could not revoke document access.");
     } finally {
       setBusyShareRevoke("");
+    }
+  }
+
+  async function shareCase(event) {
+    event.preventDefault();
+    if (!selectedCase?.id) return;
+    setCaseShareBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await apiFetch(`${API_BASE}/api/cases/${selectedCase.id}/shares`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: caseShareEmail, permission: caseSharePermission }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      const shared = await response.json();
+      setCaseShareEmail("");
+      setNotice(`Shared ${selectedCase.title} with ${shared.email} (${shared.permission} access).`);
+      const listResponse = await apiFetch(`${API_BASE}/api/cases/${selectedCase.id}/shares`);
+      if (!listResponse.ok) throw new Error(await readApiError(listResponse));
+      const payload = await listResponse.json();
+      setCaseShares(payload.items || []);
+      await loadCaseData();
+    } catch (err) {
+      setError(err.message || "Could not share the case.");
+    } finally {
+      setCaseShareBusy(false);
+    }
+  }
+
+  async function revokeCaseShare(item) {
+    if (!selectedCase?.id || !window.confirm(`Revoke ${item.email}'s access to this case and its deadlines?`)) return;
+    setBusyCaseShareRevoke(item.user_id);
+    setError("");
+    try {
+      const response = await apiFetch(`${API_BASE}/api/cases/${selectedCase.id}/shares/${item.user_id}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      setCaseShares((previous) => previous.filter((share) => share.user_id !== item.user_id));
+      setNotice(`Revoked case access for ${item.email}.`);
+      await loadCaseData();
+    } catch (err) {
+      setError(err.message || "Could not revoke case access.");
+    } finally {
+      setBusyCaseShareRevoke("");
     }
   }
 
@@ -614,7 +695,7 @@ export default function App() {
             <label>Password<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} required minLength={needsBootstrap ? 12 : 1} maxLength={256} autoComplete={needsBootstrap ? "new-password" : "current-password"} placeholder={needsBootstrap ? "At least 12 characters" : "Your password"} /></label>
             <button className="button-primary" type="submit" disabled={authBusy}>{authBusy ? "Please wait…" : needsBootstrap ? "Create administrator ↗" : "Sign in securely ↗"}</button>
           </form>
-          <p className="auth-footnote">Access tokens stay in memory and are cleared when you sign out. Do not use this local development app for confidential client files until controlled case sharing and production hardening are complete.</p>
+          <p className="auth-footnote">Access tokens stay in memory and are cleared when you sign out. Do not use this local development app for confidential client files until production security review and operational safeguards are complete.</p>
         </div>
       </main>
     );
@@ -657,21 +738,36 @@ export default function App() {
             </form>
             <div className="case-list"><h4>Saved cases <span>{cases.length}</span></h4>
               {cases.length === 0 ? <p className="subtle-copy">No cases yet. Create one to attach deadlines.</p> : cases.map((item) => <button className={"case-list-item " + (selectedCaseId === item.id ? "case-selected" : "")} key={item.id} onClick={() => setSelectedCaseId(item.id)}>
-                <span><strong>{item.title}</strong><small>{item.case_number || item.jurisdiction || "No reference added"}</small></span><span className={"status-pill status-" + item.status}>{item.status}</span>
+                <span><strong>{item.title}</strong><small>{item.case_number || item.jurisdiction || "No reference added"}{item.access_level !== "owner" ? " · Shared " + item.access_level : ""}</small></span><span className={"status-pill status-" + item.status}>{item.status}</span>
               </button>)}
             </div>
+            {selectedCase?.access_level === "owner" && <section className="share-panel case-share-panel" aria-label="Case sharing controls">
+              <div className="share-panel-heading"><div><p className="eyebrow">CONTROLLED ACCESS</p><h4>Share this case</h4><p>Collaborators can access this case and its deadlines.</p></div><span className="share-lock">OWNER ONLY</span></div>
+              <form className="share-form" onSubmit={shareCase}>
+                <label>Account email<input type="email" value={caseShareEmail} onChange={(event) => setCaseShareEmail(event.target.value)} required maxLength={254} placeholder="colleague@example.com" /></label>
+                <label>Permission<select value={caseSharePermission} onChange={(event) => setCaseSharePermission(event.target.value)}><option value="read">Read only</option><option value="write">Can edit</option></select></label>
+                <button className="button-primary" type="submit" disabled={caseShareBusy || !caseShareEmail.trim()}>{caseShareBusy ? "Sharing…" : "Grant access +"}</button>
+              </form>
+              <div className="share-list"><h5>People with access <span>{caseShares.length}</span></h5>
+                {caseSharesLoading ? <p className="subtle-copy">Loading access list…</p> : caseShares.length === 0 ? <p className="subtle-copy">This case is private to your account.</p> : caseShares.map((item) => <article className="share-row" key={item.user_id}>
+                  <div><strong>{item.full_name}</strong><small>{item.email}</small></div>
+                  <div className="share-row-actions"><span className="status-pill">{item.permission} access</span><button className="read-button" type="button" disabled={busyCaseShareRevoke === item.user_id} onClick={() => revokeCaseShare(item)}>{busyCaseShareRevoke === item.user_id ? "Revoking…" : "Revoke"}</button></div>
+                </article>)}
+              </div>
+              <p className="share-note">Revoking access immediately hides this case, its deadlines, and its case notifications from the collaborator.</p>
+            </section>}
           </section>
 
           <section className="management-card">
             <div className="management-title"><p className="eyebrow">VERIFIED OBLIGATIONS</p><h3>Record a deadline</h3><p>Only save dates you have verified from a reliable source.</p></div>
             {cases.length === 0 ? <p className="subtle-copy">Create a case first, then you can add its deadlines.</p> : <form className="stacked-form" onSubmit={createDeadline}>
-              <label>Case<select value={selectedCaseId} onChange={(event) => setSelectedCaseId(event.target.value)} required>{cases.filter((item) => item.status === "active").map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}</select></label>
+              <label>Case<select value={selectedCaseId} onChange={(event) => setSelectedCaseId(event.target.value)} required>{cases.filter((item) => item.status === "active").map((item) => <option value={item.id} key={item.id} disabled={item.access_level === "read"}>{item.title}{item.access_level === "read" ? " (read only)" : ""}</option>)}</select></label>
               <label>Deadline / action<input value={deadlineTitle} onChange={(event) => setDeadlineTitle(event.target.value)} required minLength={3} maxLength={180} placeholder="e.g. File written response" /></label>
               <label>Due date<input type="date" value={deadlineDate} onChange={(event) => setDeadlineDate(event.target.value)} required /></label>
               <label>Source document <span>(optional)</span><select value={deadlineSourceDocumentId} onChange={(event) => { setDeadlineSourceDocumentId(event.target.value); setDeadlineSourcePage(""); }}><option value="">No document linked</option>{documents.map((item) => <option value={item.id} key={item.id}>{item.original_filename}</option>)}</select></label>
               {deadlineSourceDocumentId && <label>Source page<input type="number" min="1" max={documents.find((item) => item.id === deadlineSourceDocumentId)?.page_count || 500} value={deadlineSourcePage} onChange={(event) => setDeadlineSourcePage(event.target.value)} required placeholder="Page containing the date" /></label>}
               <label className="confirm-check"><input type="checkbox" checked={deadlineConfirmed} onChange={(event) => setDeadlineConfirmed(event.target.checked)} required /><span>I have verified this date and action against the source or an authoritative record.</span></label>
-              <button className="button-primary" type="submit" disabled={savingDeadline || !selectedCaseId || !deadlineConfirmed || !canManageCases}>{savingDeadline ? "Saving…" : "Save confirmed deadline +"}</button>
+              <button className="button-primary" type="submit" disabled={savingDeadline || !selectedCaseId || !deadlineConfirmed || !canManageCases || selectedCase?.access_level === "read"}>{savingDeadline ? "Saving…" : "Save confirmed deadline +"}</button>
             </form>}
           </section>
         </div>
@@ -682,7 +778,7 @@ export default function App() {
             {deadlines.length === 0 ? <p className="subtle-copy">No deadlines recorded yet.</p> : <div className="deadline-list">{deadlines.map((item) => <article className="deadline-item" key={item.id}>
               <div className="deadline-date"><strong>{new Date(item.due_date + "T12:00:00").toLocaleDateString(undefined, { day: "2-digit" })}</strong><span>{new Date(item.due_date + "T12:00:00").toLocaleDateString(undefined, { month: "short" })}</span></div>
               <div className="deadline-info"><strong>{item.title}</strong><small>{item.case_title} · Due {item.due_date}{item.source_page ? " · Source p. " + item.source_page : ""}</small></div>
-              {item.status === "pending" && canManageCases ? <button className="complete-button" onClick={() => completeDeadline(item)}>Complete</button> : <span className={"status-pill status-" + item.status}>{item.status}</span>}
+              {item.status === "pending" && canManageCases && item.access_level !== "read" ? <button className="complete-button" onClick={() => completeDeadline(item)}>Complete</button> : <span className={"status-pill status-" + item.status}>{item.status}</span>}
             </article>)}</div>}
           </section>
           <section className="management-card">
@@ -802,7 +898,7 @@ export default function App() {
         </section>}
       </section>
 
-      <footer className="footer"><span>LEGAL AI ASSISTANT</span><span>Keep sensitive case files private. Controlled case sharing and production hardening are still required.</span></footer>
+      <footer className="footer"><span>LEGAL AI ASSISTANT</span><span>Case sharing is available; production security review and operational hardening are still required.</span></footer>
     </main>
   );
 }
