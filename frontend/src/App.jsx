@@ -2,6 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 const MAX_FILE_BYTES = 15 * 1024 * 1024;
+let currentAccessToken = "";
+const rawFetch = fetch.bind(window);
+
+function apiFetch(input, options = {}) {
+  const headers = new Headers(options.headers || {});
+  if (currentAccessToken) headers.set("Authorization", "Bearer " + currentAccessToken);
+  return rawFetch(input, { ...options, headers });
+}
 
 function formatBytes(bytes = 0) {
   if (bytes < 1024) return `${bytes} B`;
@@ -24,6 +32,21 @@ async function readApiError(response) {
 }
 
 export default function App() {
+  const [authStatus, setAuthStatus] = useState("checking");
+  const [needsBootstrap, setNeedsBootstrap] = useState(false);
+  const [accessToken, setAccessToken] = useState("");
+  const [authUser, setAuthUser] = useState(null);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [bootstrapName, setBootstrapName] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [teamUsers, setTeamUsers] = useState([]);
+  const [newUserName, setNewUserName] = useState("");
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserRole, setNewUserRole] = useState("lawyer");
+  const [teamBusy, setTeamBusy] = useState(false);
   const [documents, setDocuments] = useState([]);
   const [selected, setSelected] = useState(null);
   const [search, setSearch] = useState("");
@@ -58,9 +81,84 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const inputRef = useRef(null);
 
+  useEffect(() => {
+    let active = true;
+    rawFetch(API_BASE + "/api/auth/bootstrap/status")
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await readApiError(response));
+        return response.json();
+      })
+      .then((payload) => {
+        if (active) setNeedsBootstrap(Boolean(payload.needs_bootstrap));
+      })
+      .catch((err) => { if (active) setAuthError("Cannot connect to the backend. " + err.message); })
+      .finally(() => { if (active) setAuthStatus("ready"); });
+    return () => { active = false; };
+  }, []);
+
+  async function signIn(email, password) {
+    const response = await rawFetch(API_BASE + "/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ username: email, password }).toString(),
+    });
+    if (!response.ok) throw new Error(await readApiError(response));
+    const payload = await response.json();
+    currentAccessToken = payload.access_token;
+    setAccessToken(payload.access_token);
+    setAuthUser(payload.user);
+    setLoading(true);
+    setAuthPassword("");
+    setAuthError("");
+  }
+
+  async function handleLogin(event) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setAuthError("");
+    try { await signIn(authEmail, authPassword); }
+    catch (err) { setAuthError(err.message || "Sign in failed."); }
+    finally { setAuthBusy(false); }
+  }
+
+  async function handleBootstrap(event) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const response = await rawFetch(API_BASE + "/api/auth/bootstrap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ full_name: bootstrapName, email: authEmail, password: authPassword }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      setNeedsBootstrap(false);
+      await signIn(authEmail, authPassword);
+    } catch (err) {
+      setAuthError(err.message || "Administrator setup failed.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  function handleLogout() {
+    currentAccessToken = "";
+    setAccessToken("");
+    setAuthUser(null);
+    setDocuments([]);
+    setCases([]);
+    setDeadlines([]);
+    setNotifications([]);
+    setSelected(null);
+    setChatAnswer("");
+    setChatSources([]);
+    setSearchResults([]);
+    setLoading(false);
+  }
+
   const loadDocuments = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE}/api/documents`);
+      const response = await apiFetch(`${API_BASE}/api/documents`);
       if (!response.ok) throw new Error(await readApiError(response));
       const payload = await response.json();
       setDocuments(payload.items || []);
@@ -75,10 +173,10 @@ export default function App() {
   const loadCaseData = useCallback(async () => {
     try {
       const [caseResponse, deadlineResponse, notificationResponse, summaryResponse] = await Promise.all([
-        fetch(API_BASE + "/api/cases"),
-        fetch(API_BASE + "/api/deadlines"),
-        fetch(API_BASE + "/api/notifications?limit=10"),
-        fetch(API_BASE + "/api/dashboard/summary"),
+        apiFetch(API_BASE + "/api/cases"),
+        apiFetch(API_BASE + "/api/deadlines"),
+        apiFetch(API_BASE + "/api/notifications?limit=10"),
+        apiFetch(API_BASE + "/api/dashboard/summary"),
       ]);
       for (const response of [caseResponse, deadlineResponse, notificationResponse, summaryResponse]) {
         if (!response.ok) throw new Error(await readApiError(response));
@@ -97,11 +195,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!accessToken) return;
     loadDocuments();
     loadCaseData();
     const refresh = window.setInterval(() => { loadCaseData(); }, 30000);
     return () => window.clearInterval(refresh);
-  }, [loadDocuments, loadCaseData]);
+  }, [loadDocuments, loadCaseData, accessToken]);
 
   const filteredDocuments = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -109,13 +208,69 @@ export default function App() {
     return documents.filter((item) => item.original_filename.toLowerCase().includes(term));
   }, [documents, search]);
 
+  const canManageCases = Boolean(authUser && ["admin", "lawyer"].includes(authUser.role));
+  const canUploadDocuments = Boolean(authUser && ["admin", "lawyer", "assistant"].includes(authUser.role));
+  const isAdmin = authUser?.role === "admin";
+
+  const loadTeamUsers = useCallback(async () => {
+    try {
+      const response = await apiFetch(API_BASE + "/api/auth/users");
+      if (!response.ok) throw new Error(await readApiError(response));
+      const payload = await response.json();
+      setTeamUsers(payload.items || []);
+    } catch (err) {
+      setError("Could not load user accounts. " + err.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (accessToken && isAdmin) loadTeamUsers();
+    else setTeamUsers([]);
+  }, [accessToken, isAdmin, loadTeamUsers]);
+
+  async function createTeamUser(event) {
+    event.preventDefault();
+    setTeamBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await apiFetch(API_BASE + "/api/auth/users", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ full_name: newUserName, email: newUserEmail, password: newUserPassword, role: newUserRole }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      setNewUserName("");
+      setNewUserEmail("");
+      setNewUserPassword("");
+      setNotice("Created account for " + newUserEmail + ".");
+      await loadTeamUsers();
+    } catch (err) {
+      setError(err.message || "Could not create the account.");
+    } finally {
+      setTeamBusy(false);
+    }
+  }
+
+  async function toggleTeamUser(item) {
+    try {
+      const response = await apiFetch(API_BASE + "/api/auth/users/" + item.id + "/active", {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_active: !item.is_active }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      await loadTeamUsers();
+    } catch (err) {
+      setError(err.message || "Could not update the account.");
+    }
+  }
+
   async function createCase(event) {
     event.preventDefault();
     setSavingCase(true);
     setError("");
     setNotice("");
     try {
-      const response = await fetch(API_BASE + "/api/cases", {
+      const response = await apiFetch(API_BASE + "/api/cases", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: caseTitle,
@@ -144,7 +299,7 @@ export default function App() {
     setError("");
     setNotice("");
     try {
-      const response = await fetch(API_BASE + "/api/deadlines", {
+      const response = await apiFetch(API_BASE + "/api/deadlines", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           case_id: selectedCaseId,
@@ -174,7 +329,7 @@ export default function App() {
 
   async function completeDeadline(item) {
     try {
-      const response = await fetch(API_BASE + "/api/deadlines/" + item.id, {
+      const response = await apiFetch(API_BASE + "/api/deadlines/" + item.id, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: "completed" }),
       });
@@ -188,7 +343,7 @@ export default function App() {
 
   async function markNotificationRead(item) {
     try {
-      const response = await fetch(API_BASE + "/api/notifications/" + item.id + "/read", { method: "POST" });
+      const response = await apiFetch(API_BASE + "/api/notifications/" + item.id + "/read", { method: "POST" });
       if (!response.ok) throw new Error(await readApiError(response));
       await loadCaseData();
     } catch (err) {
@@ -198,7 +353,7 @@ export default function App() {
 
   async function runReminderCheck() {
     try {
-      const response = await fetch(API_BASE + "/api/reminders/run", { method: "POST" });
+      const response = await apiFetch(API_BASE + "/api/reminders/run", { method: "POST" });
       if (!response.ok) throw new Error(await readApiError(response));
       const result = await response.json();
       setNotice("Reminder check complete. Created " + result.notifications_created + " notification(s).");
@@ -226,13 +381,13 @@ export default function App() {
     body.append("file", file);
     setUploading(true);
     try {
-      const response = await fetch(`${API_BASE}/api/documents`, { method: "POST", body });
+      const response = await apiFetch(`${API_BASE}/api/documents`, { method: "POST", body });
       if (!response.ok) throw new Error(await readApiError(response));
       const created = await response.json();
       setNotice(`Uploaded ${created.filename}. Extracted ${created.extracted_characters.toLocaleString()} characters from ${created.page_count} page(s).`);
       await loadDocuments();
       await loadCaseData();
-      const detailResponse = await fetch(`${API_BASE}/api/documents/${created.id}`);
+      const detailResponse = await apiFetch(`${API_BASE}/api/documents/${created.id}`);
       if (detailResponse.ok) setSelected(await detailResponse.json());
     } catch (err) {
       setError(err.message || "Upload failed. Please try again.");
@@ -244,7 +399,7 @@ export default function App() {
   async function openDocument(id) {
     setError("");
     try {
-      const response = await fetch(`${API_BASE}/api/documents/${id}`);
+      const response = await apiFetch(`${API_BASE}/api/documents/${id}`);
       if (!response.ok) throw new Error(await readApiError(response));
       setSelected(await response.json());
     } catch (err) {
@@ -257,7 +412,7 @@ export default function App() {
     setError("");
     setNotice("");
     try {
-      const response = await fetch(`${API_BASE}/api/documents/${item.id}/index`, { method: "POST" });
+      const response = await apiFetch(`${API_BASE}/api/documents/${item.id}/index`, { method: "POST" });
       if (!response.ok) throw new Error(await readApiError(response));
       const result = await response.json();
       setNotice(`Indexed ${result.filename}: ${result.chunks_indexed} searchable chunks created.`);
@@ -276,7 +431,7 @@ export default function App() {
     setSearchMessage("");
     setSearchResults([]);
     try {
-      const response = await fetch(`${API_BASE}/api/search`, {
+      const response = await apiFetch(`${API_BASE}/api/search`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: semanticQuery, limit: 5 }),
       });
@@ -298,7 +453,7 @@ export default function App() {
     setChatSources([]);
     setError("");
     try {
-      const response = await fetch(API_BASE + "/api/chat/stream", {
+      const response = await apiFetch(API_BASE + "/api/chat/stream", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: chatQuestion, limit: 5 }),
       });
@@ -340,7 +495,7 @@ export default function App() {
     setError("");
     setNotice("");
     try {
-      const response = await fetch(`${API_BASE}/api/documents/${item.id}`, { method: "DELETE" });
+      const response = await apiFetch(`${API_BASE}/api/documents/${item.id}`, { method: "DELETE" });
       if (!response.ok) throw new Error(await readApiError(response));
       if (selected?.id === item.id) setSelected(null);
       setNotice(`Deleted ${item.original_filename}.`);
@@ -352,6 +507,31 @@ export default function App() {
     }
   }
 
+  if (authStatus === "checking") {
+    return <main className="auth-shell"><div className="auth-card"><span className="brand-mark">L</span><h1>Legal AI <em>Intelligence</em></h1><p>Preparing your secure workspace…</p></div></main>;
+  }
+
+  if (!accessToken || !authUser) {
+    return (
+      <main className="auth-shell">
+        <div className="auth-card">
+          <span className="brand-mark">L</span>
+          <p className="eyebrow">{needsBootstrap ? "INITIAL SECURE SETUP" : "SECURE WORKSPACE"}</p>
+          <h1>{needsBootstrap ? <>Create your <em>administrator</em></> : <>Welcome <em>back.</em></>}</h1>
+          <p className="auth-intro">{needsBootstrap ? "Create the first administrator account. This one-time setup closes after the account is created." : "Sign in to access your case files, legal document search, and deadline tracker."}</p>
+          {authError && <div className="message message-error" role="alert"><span>!</span><p>{authError}</p></div>}
+          <form className="auth-form" onSubmit={needsBootstrap ? handleBootstrap : handleLogin}>
+            {needsBootstrap && <label>Full name<input value={bootstrapName} onChange={(event) => setBootstrapName(event.target.value)} required minLength={2} maxLength={120} autoComplete="name" placeholder="Your name" /></label>}
+            <label>Email address<input type="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} required maxLength={254} autoComplete="username" placeholder="you@example.com" /></label>
+            <label>Password<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} required minLength={needsBootstrap ? 12 : 1} maxLength={256} autoComplete={needsBootstrap ? "new-password" : "current-password"} placeholder={needsBootstrap ? "At least 12 characters" : "Your password"} /></label>
+            <button className="button-primary" type="submit" disabled={authBusy}>{authBusy ? "Please wait…" : needsBootstrap ? "Create administrator ↗" : "Sign in securely ↗"}</button>
+          </form>
+          <p className="auth-footnote">Access tokens stay in memory and are cleared when you sign out. Do not use this local development app for confidential client files until access controls and deployment hardening are complete.</p>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -359,7 +539,7 @@ export default function App() {
           <span className="brand-mark">L</span>
           <span>Legal AI <span className="brand-light">/ Intelligence</span></span>
         </a>
-        <div className="topbar-right"><span className="api-status"><span className={error && documents.length === 0 ? "status-dot status-error" : "status-dot"} />{error && documents.length === 0 ? "API connection needed" : "Local workspace"}</span><span className="phase-label">CASE + DOCUMENTS</span></div>
+        <div className="topbar-right"><span className="api-status"><span className={error && documents.length === 0 ? "status-dot status-error" : "status-dot"} />{error && documents.length === 0 ? "API connection needed" : "Local workspace"}</span><span className="user-role">{authUser.full_name} · {authUser.role}</span><button className="logout-button" onClick={handleLogout}>Sign out</button><span className="phase-label">CASE + DOCUMENTS</span></div>
       </header>
 
       <section className="hero">
@@ -370,7 +550,7 @@ export default function App() {
       </section>
 
       <section className="case-dashboard" id="cases">
-        <div className="section-heading"><div><p className="eyebrow">CASE OPERATIONS</p><h2>Case tracker</h2></div><button className="button-secondary reminder-button" onClick={runReminderCheck}>Check reminders now ↻</button></div>
+        <div className="section-heading"><div><p className="eyebrow">CASE OPERATIONS</p><h2>Case tracker</h2></div>{isAdmin && <button className="button-secondary reminder-button" onClick={runReminderCheck}>Check reminders now ↻</button>}</div>
         <div className="summary-grid">
           <article><span>ACTIVE CASES</span><strong>{summary.active_cases}</strong></article>
           <article><span>DOCUMENTS</span><strong>{summary.documents}</strong></article>
@@ -385,7 +565,7 @@ export default function App() {
             <form className="stacked-form" onSubmit={createCase}>
               <label>Case title<input value={caseTitle} onChange={(event) => setCaseTitle(event.target.value)} required minLength={3} maxLength={180} placeholder="e.g. Supplier contract dispute" /></label>
               <div className="form-row"><label>Case number <span>(optional)</span><input value={caseNumber} onChange={(event) => setCaseNumber(event.target.value)} maxLength={120} placeholder="Case / reference ID" /></label><label>Jurisdiction <span>(optional)</span><input value={caseJurisdiction} onChange={(event) => setCaseJurisdiction(event.target.value)} maxLength={120} placeholder="Court or region" /></label></div>
-              <button className="button-primary" type="submit" disabled={savingCase}>{savingCase ? "Saving…" : "Create case +"}</button>
+              <button className="button-primary" type="submit" disabled={savingCase || !canManageCases}>{savingCase ? "Saving…" : "Create case +"}</button>
             </form>
             <div className="case-list"><h4>Saved cases <span>{cases.length}</span></h4>
               {cases.length === 0 ? <p className="subtle-copy">No cases yet. Create one to attach deadlines.</p> : cases.map((item) => <button className={"case-list-item " + (selectedCaseId === item.id ? "case-selected" : "")} key={item.id} onClick={() => setSelectedCaseId(item.id)}>
@@ -403,7 +583,7 @@ export default function App() {
               <label>Source document <span>(optional)</span><select value={deadlineSourceDocumentId} onChange={(event) => { setDeadlineSourceDocumentId(event.target.value); setDeadlineSourcePage(""); }}><option value="">No document linked</option>{documents.map((item) => <option value={item.id} key={item.id}>{item.original_filename}</option>)}</select></label>
               {deadlineSourceDocumentId && <label>Source page<input type="number" min="1" max={documents.find((item) => item.id === deadlineSourceDocumentId)?.page_count || 500} value={deadlineSourcePage} onChange={(event) => setDeadlineSourcePage(event.target.value)} required placeholder="Page containing the date" /></label>}
               <label className="confirm-check"><input type="checkbox" checked={deadlineConfirmed} onChange={(event) => setDeadlineConfirmed(event.target.checked)} required /><span>I have verified this date and action against the source or an authoritative record.</span></label>
-              <button className="button-primary" type="submit" disabled={savingDeadline || !selectedCaseId || !deadlineConfirmed}>{savingDeadline ? "Saving…" : "Save confirmed deadline +"}</button>
+              <button className="button-primary" type="submit" disabled={savingDeadline || !selectedCaseId || !deadlineConfirmed || !canManageCases}>{savingDeadline ? "Saving…" : "Save confirmed deadline +"}</button>
             </form>}
           </section>
         </div>
@@ -414,7 +594,7 @@ export default function App() {
             {deadlines.length === 0 ? <p className="subtle-copy">No deadlines recorded yet.</p> : <div className="deadline-list">{deadlines.map((item) => <article className="deadline-item" key={item.id}>
               <div className="deadline-date"><strong>{new Date(item.due_date + "T12:00:00").toLocaleDateString(undefined, { day: "2-digit" })}</strong><span>{new Date(item.due_date + "T12:00:00").toLocaleDateString(undefined, { month: "short" })}</span></div>
               <div className="deadline-info"><strong>{item.title}</strong><small>{item.case_title} · Due {item.due_date}{item.source_page ? " · Source p. " + item.source_page : ""}</small></div>
-              {item.status === "pending" ? <button className="complete-button" onClick={() => completeDeadline(item)}>Complete</button> : <span className={"status-pill status-" + item.status}>{item.status}</span>}
+              {item.status === "pending" && canManageCases ? <button className="complete-button" onClick={() => completeDeadline(item)}>Complete</button> : <span className={"status-pill status-" + item.status}>{item.status}</span>}
             </article>)}</div>}
           </section>
           <section className="management-card">
@@ -428,6 +608,29 @@ export default function App() {
         </div>
       </section>
 
+      {isAdmin && <section className="team-panel" id="team">
+        <div className="section-heading"><div><p className="eyebrow">ACCESS CONTROL</p><h2>Team accounts</h2></div><span className="team-count">{teamUsers.length} account(s)</span></div>
+        <div className="team-grid">
+          <section className="management-card">
+            <div className="management-title"><h3>Create an account</h3><p>Passwords require at least 12 characters.</p></div>
+            <form className="stacked-form" onSubmit={createTeamUser}>
+              <label>Full name<input value={newUserName} onChange={(event) => setNewUserName(event.target.value)} required minLength={2} maxLength={120} /></label>
+              <label>Email address<input type="email" value={newUserEmail} onChange={(event) => setNewUserEmail(event.target.value)} required maxLength={254} /></label>
+              <label>Temporary password<input type="password" value={newUserPassword} onChange={(event) => setNewUserPassword(event.target.value)} required minLength={12} maxLength={256} autoComplete="new-password" /></label>
+              <label>Role<select value={newUserRole} onChange={(event) => setNewUserRole(event.target.value)}><option value="lawyer">Lawyer</option><option value="assistant">Assistant</option><option value="viewer">Viewer (read only)</option><option value="admin">Administrator</option></select></label>
+              <button className="button-primary" type="submit" disabled={teamBusy}>{teamBusy ? "Creating…" : "Create account +"}</button>
+            </form>
+          </section>
+          <section className="management-card">
+            <div className="management-title"><h3>Account permissions</h3><p>Disabled accounts lose access on their next request.</p></div>
+            <div className="team-user-list">{teamUsers.map((item) => <article className="team-user" key={item.id}>
+              <div><strong>{item.full_name}</strong><small>{item.email}</small><span className={"status-pill status-" + (item.is_active ? "active" : "archived")}>{item.role} · {item.is_active ? "active" : "disabled"}</span></div>
+              <button className="read-button" disabled={item.id === authUser.id} onClick={() => toggleTeamUser(item)}>{item.is_active ? "Disable" : "Enable"}</button>
+            </article>)}</div>
+          </section>
+        </div>
+      </section>}
+
       <section className="workspace" id="workspace">
         <div className="section-heading">
           <div><p className="eyebrow">YOUR CASE FILES</p><h2>Document library</h2></div>
@@ -438,7 +641,7 @@ export default function App() {
           <div className="upload-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15.5v3A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg></div>
           <div className="upload-copy"><h3>Upload a legal document</h3><p>PDF only · Up to 15 MB · Text extraction runs locally through the API</p></div>
           <input ref={inputRef} className="visually-hidden" type="file" accept="application/pdf,.pdf" onChange={handleUpload} />
-          <button className="button-primary" type="button" disabled={uploading} onClick={() => inputRef.current?.click()}>{uploading ? <><span className="spinner" /> Processing…</> : "Choose PDF ↗"}</button>
+          <button className="button-primary" type="button" disabled={uploading || !canUploadDocuments} onClick={() => inputRef.current?.click()}>{uploading ? <><span className="spinner" /> Processing…</> : "Choose PDF ↗"}</button>
         </div>
 
         {error && <div className="message message-error" role="alert"><span>!</span><div><strong>Something needs attention</strong><p>{error}</p></div><button className="message-close" onClick={() => setError("")} aria-label="Dismiss error">×</button></div>}
@@ -478,13 +681,13 @@ export default function App() {
         </div>
 
         {loading ? <div className="empty-state"><span className="spinner spinner-dark" /><p>Loading your document library…</p></div> : filteredDocuments.length === 0 ? (
-          <div className="empty-state"><div className="empty-file">PDF</div><h3>{search ? "No matching documents" : "Your document library is ready"}</h3><p>{search ? "Try another filename." : "Upload your first PDF to extract text and see it appear here."}</p><button className="button-secondary" onClick={() => inputRef.current?.click()} disabled={uploading}>Upload a PDF</button></div>
+          <div className="empty-state"><div className="empty-file">PDF</div><h3>{search ? "No matching documents" : "Your document library is ready"}</h3><p>{search ? "Try another filename." : "Upload your first PDF to extract text and see it appear here."}</p><button className="button-secondary" onClick={() => inputRef.current?.click()} disabled={uploading || !canUploadDocuments}>Upload a PDF</button></div>
         ) : (
           <div className="document-table-wrap"><table className="document-table"><thead><tr><th>DOCUMENT</th><th>PAGES</th><th>SIZE</th><th>ADDED</th><th><span className="visually-hidden">Actions</span></th></tr></thead><tbody>
             {filteredDocuments.map((item) => <tr key={item.id} className={selected?.id === item.id ? "selected-row" : ""}>
               <td><button className="document-name" onClick={() => openDocument(item.id)}><span className="pdf-badge">PDF</span><span><strong>{item.original_filename}</strong><small>{Number(item.extracted_characters || 0).toLocaleString()} extracted characters</small></span></button></td>
               <td>{item.page_count}</td><td>{formatBytes(item.size_bytes)}</td><td className="date-cell">{formatDate(item.created_at)}</td>
-              <td className="row-actions"><button className="index-button" onClick={() => indexDocument(item)} disabled={busyIndex === item.id}>{busyIndex === item.id ? "Indexing…" : item.indexed ? "Re-index" : "Index"}</button><button className="delete-button" onClick={() => removeDocument(item)} disabled={busyDelete === item.id} aria-label={`Delete ${item.original_filename}`}>{busyDelete === item.id ? "…" : "Delete"}</button></td>
+              <td className="row-actions"><button className="index-button" onClick={() => indexDocument(item)} disabled={busyIndex === item.id || !canUploadDocuments}>{busyIndex === item.id ? "Indexing…" : item.indexed ? "Re-index" : "Index"}</button><button className="delete-button" onClick={() => removeDocument(item)} disabled={busyDelete === item.id || !canManageCases} aria-label={`Delete ${item.original_filename}`}>{busyDelete === item.id ? "…" : "Delete"}</button></td>
             </tr>)}
           </tbody></table></div>
         )}
@@ -495,7 +698,7 @@ export default function App() {
         </section>}
       </section>
 
-      <footer className="footer"><span>LEGAL AI ASSISTANT</span><span>Keep sensitive case files private. Authentication and access controls are the next security milestone.</span></footer>
+      <footer className="footer"><span>LEGAL AI ASSISTANT</span><span>Keep sensitive case files private. Case-level access controls and deployment hardening are still required.</span></footer>
     </main>
   );
 }
