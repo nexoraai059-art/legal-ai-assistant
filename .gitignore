@@ -19,8 +19,12 @@ dist/
 .idea/
 .DS_Store
 
-# Local data
+# Local data and encrypted backups
 uploads/
 data/
 *.sqlite3
 chroma/
+**/backups/
+**/backup-encryption.key
+*.lai
+*.partial
