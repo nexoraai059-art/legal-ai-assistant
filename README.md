@@ -17,7 +17,7 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 - Per-account isolation for documents, semantic retrieval, cases, deadlines, notifications, activity history, and dashboard metrics.
 - Owner-managed case and document sharing by active account email, with read-only or write permissions, access-scoped deadlines/notifications, and immediate revocation.
 - API security headers, no-store caching for API responses, and per-IP failed-login throttling (10 attempts per 15 minutes by default).
-- PDF upload validation, extraction, local file storage, SHA-256 hashes, metadata, listing, preview, and deletion.
+- PDF upload validation, selectable-text extraction, optional local OCR for scanned pages, local file storage, SHA-256 hashes, metadata, listing, preview, and deletion.
 - Page-aware overlapping chunks, hosted embeddings, persistent ChromaDB indexing, and semantic search.
 - Document-grounded RAG chat that provides source labels and document/page metadata; unknown source labels are removed.
 - SSE chat response streaming with source, token, completion, and error events.
@@ -26,12 +26,12 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 - Background deadline checks every five minutes and deduplicated in-app upcoming/overdue notifications.
 - Encrypted manual backup/restore for SQLite, uploaded PDFs, and Chroma data, with authenticated encryption, file-hash validation, SQLite integrity checks, and safe preservation of the previous data directory.
 - React dashboard with summary metrics, case forms, deadline management, notifications, document library, semantic search, and RAG chat.
-- Automated tests for document lifecycle, retrieval, chat citations, notification SSE, session revocation, deadline reminders, account isolation, case/document sharing, and encrypted backup/restore.
+- Automated tests for document lifecycle, OCR fallback behavior, retrieval, chat citations, notification SSE, session revocation, deadline reminders, account isolation, case/document sharing, and encrypted backup/restore.
 
 ## Still outstanding
 - Organization tenancy and cross-organization access policies; case and document sharing grants access to individual active accounts within the same local user store.
 - Password reset, MFA, refresh-token revocation, and production audit identity.
-- OCR for scanned PDFs, email/SMS/push notifications, and calendar integrations.
+- Email/SMS/push notifications and calendar integrations.
 - WebSocket transport (chat and notification streaming currently use Server-Sent Events, SSE).
 - Automated hosted-provider evaluation, full security review, deployment, and scheduled off-site backup/restore operations.
 
@@ -93,8 +93,21 @@ cd backend
 
 Defaults: 15 MB maximum upload and 500 pages per PDF. Change `MAX_UPLOAD_MB` and `MAX_PDF_PAGES` in the backend environment.
 
+## Optional OCR for scanned PDFs
+
+OCR is disabled by default. Install Tesseract OCR for Windows, make sure `tesseract.exe` is on `PATH`, then set these values in `backend/.env`:
+
+```dotenv
+OCR_ENABLED=true
+OCR_LANGUAGES=eng
+OCR_DPI=150
+MAX_OCR_PAGES=50
+```
+
+Only pages with little or no selectable text are OCR-processed. The per-document OCR page limit prevents unexpectedly heavy CPU work; increase `MAX_OCR_PAGES` deliberately for longer scanned files. If Tesseract is unavailable, the upload returns a clear error instead of silently pretending OCR succeeded. OCR can misread legal names, case numbers, and dates, so verify recognized text against the page image before relying on it.
+
 ## Local data and privacy
-By default, PDFs, SQLite metadata, and the ChromaDB index are stored under `backend/data/`, which is ignored by Git. Stored files use generated UUID filenames, not user-provided paths. Keep this folder backed up if local persistence matters. Scanned/image-only PDFs currently need OCR, which is not yet implemented.
+By default, PDFs, SQLite metadata, and the ChromaDB index are stored under `backend/data/`, which is ignored by Git. Stored files use generated UUID filenames, not user-provided paths. Keep this folder backed up if local persistence matters. Optional OCR for scanned pages is supported when Tesseract is installed and `OCR_ENABLED=true`; it is disabled by default to avoid unexpected CPU-heavy processing.
 
 **Security limitation:** each account is isolated from other accounts' documents, search results, cases, deadlines, notifications, activity, and dashboard data. Owners can share individual cases and documents with active accounts and revoke access; case and document sharing are not organization-level tenancy. Password reset, MFA, refresh-token revocation, external security review, and production deployment hardening are still outstanding. This remains a local-development prototype; do not expose the API publicly or upload confidential client files until production security review and operational safeguards are complete. Hosted embeddings and chat send extracted passages to the configured provider; review provider privacy and data-processing terms before confidential use. Do not commit `.env` files or API keys.
 

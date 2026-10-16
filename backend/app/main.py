@@ -21,6 +21,7 @@ from app.services import cases as case_service
 from app.services import chat as chat_service
 from app.services import embeddings, vector_store
 from app.services.chunking import chunk_document_text
+from app.services.pdf_processing import OcrPageLimitError, OcrUnavailableError, extract_page_text
 
 
 logger = logging.getLogger(__name__)
@@ -320,9 +321,28 @@ def upload_document(http_request: Request, file: UploadFile = File(...)) -> dict
                 raise HTTPException(status_code=400, detail="The PDF contains no pages.")
             if page_count > settings.max_pdf_pages:
                 raise HTTPException(status_code=413, detail=f"PDF exceeds the {settings.max_pdf_pages}-page limit.")
-            extracted_text = "\n\n".join(
-                f"[Page {index + 1}]\n{page.get_text('text')}" for index, page in enumerate(pdf)
-            ).strip()
+            page_sections: list[str] = []
+            ocr_pages_processed = 0
+            for index, page in enumerate(pdf):
+                page_text = page.get_text("text")
+                try:
+                    page_text, used_ocr = extract_page_text(
+                        page,
+                        original_text=page_text,
+                        ocr_enabled=settings.ocr_enabled,
+                        language=settings.ocr_languages,
+                        dpi=settings.ocr_dpi,
+                        allow_ocr=ocr_pages_processed < settings.max_ocr_pages,
+                    )
+                except OcrUnavailableError as exc:
+                    raise HTTPException(status_code=503, detail=str(exc)) from exc
+                except OcrPageLimitError as exc:
+                    raise HTTPException(status_code=413, detail=str(exc)) from exc
+                if used_ocr:
+                    ocr_pages_processed += 1
+                if page_text.strip():
+                    page_sections.append(f"[Page {index + 1}]\n{page_text.strip()}")
+            extracted_text = "\n\n".join(page_sections).strip()
     except HTTPException:
         raise
     except (fitz.FileDataError, ValueError, RuntimeError) as exc:
@@ -357,6 +377,7 @@ def upload_document(http_request: Request, file: UploadFile = File(...)) -> dict
         "page_count": page_count,
         "extracted_characters": len(extracted_text),
         "text_extracted": bool(extracted_text),
+        "ocr_pages_processed": ocr_pages_processed,
         "indexed": False,
         "created_at": record["created_at"],
     }
@@ -425,7 +446,7 @@ def index_document(document_id: str, http_request: Request) -> dict[str, object]
     if not chunks:
         raise HTTPException(
             status_code=422,
-            detail="No selectable text was found. Scanned PDFs need OCR, which is not supported yet.",
+            detail="No selectable text was found. Enable OCR_ENABLED and install Tesseract OCR to process scanned PDFs.",
         )
     try:
         vectors = embeddings.embed_texts([chunk["text"] for chunk in chunks])

@@ -783,3 +783,54 @@ def test_disabling_then_reenabling_user_does_not_restore_old_session(client):
     enabled = client.patch(f"/api/auth/users/{user_id}/active", json={"is_active": True})
     assert enabled.status_code == 200, enabled.text
     assert client.get("/api/auth/me", headers={"Authorization": old_token}).status_code == 401
+
+
+
+def test_upload_uses_ocr_when_enabled_and_page_has_no_selectable_text(client, monkeypatch):
+    monkeypatch.setattr(config.settings, "ocr_enabled", True)
+    calls = []
+
+    def fake_ocr(page, **kwargs):
+        calls.append(kwargs)
+        return "Recognized text from a scanned court filing.", True
+
+    monkeypatch.setattr(main, "extract_page_text", fake_ocr)
+    stream = io.BytesIO()
+    with fitz.open() as pdf:
+        pdf.new_page()
+        pdf.save(stream)
+
+    response = client.post(
+        "/api/documents",
+        files={"file": ("scanned.pdf", stream.getvalue(), "application/pdf")},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["ocr_pages_processed"] == 1
+    assert response.json()["text_extracted"] is True
+    assert len(calls) == 1
+    detail = client.get(f"/api/documents/{response.json()['id']}")
+    assert "Recognized text from a scanned court filing." in detail.json()["extracted_text"]
+
+
+
+def test_scanned_pdf_without_ocr_does_not_create_fake_page_text(client, monkeypatch):
+    monkeypatch.setattr(config.settings, "ocr_enabled", False)
+    stream = io.BytesIO()
+    with fitz.open() as pdf:
+        pdf.new_page()
+        pdf.save(stream)
+
+    response = client.post(
+        "/api/documents",
+        files={"file": ("scanned-no-ocr.pdf", stream.getvalue(), "application/pdf")},
+    )
+
+    assert response.status_code == 201, response.text
+    created = response.json()
+    assert created["text_extracted"] is False
+    assert created["extracted_characters"] == 0
+    assert created["ocr_pages_processed"] == 0
+    indexed = client.post(f"/api/documents/{created['id']}/index")
+    assert indexed.status_code == 422
+    assert "OCR_ENABLED" in indexed.json()["detail"]

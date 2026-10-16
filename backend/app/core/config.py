@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +24,10 @@ class Settings(BaseSettings):
     data_dir: Path = BACKEND_DIR / "data"
     max_upload_mb: int = 15
     max_pdf_pages: int = 500
+    ocr_enabled: bool = False
+    ocr_languages: str = Field(default="eng", min_length=2, max_length=100, pattern=r"^[A-Za-z0-9_+.-]+$")
+    ocr_dpi: int = Field(default=150, ge=72, le=300)
+    max_ocr_pages: int = Field(default=50, ge=1, le=500)
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

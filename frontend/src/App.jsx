@@ -629,7 +629,13 @@ export default function App() {
       const response = await apiFetch(`${API_BASE}/api/documents`, { method: "POST", body });
       if (!response.ok) throw new Error(await readApiError(response));
       const created = await response.json();
-      setNotice(`Uploaded ${created.filename}. Extracted ${created.extracted_characters.toLocaleString()} characters from ${created.page_count} page(s).`);
+      const extractionSummary = created.text_extracted
+        ? `Extracted ${created.extracted_characters.toLocaleString()} characters from ${created.page_count} page(s).`
+        : "No selectable text was found; scanned pages need optional OCR before indexing.";
+      const ocrSummary = created.ocr_pages_processed
+        ? ` OCR processed ${created.ocr_pages_processed} scanned page(s).`
+        : "";
+      setNotice(`Uploaded ${created.filename}. ${extractionSummary}${ocrSummary}`);
       await loadDocuments();
       await loadCaseData();
       const detailResponse = await apiFetch(`${API_BASE}/api/documents/${created.id}`);
