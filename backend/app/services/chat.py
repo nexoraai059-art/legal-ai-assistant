@@ -72,3 +72,53 @@ def generate_answer(question: str, sources: list[dict[str, Any]]) -> str:
     except Exception as exc:
         # Do not expose provider response bodies or secrets in the public error.
         raise ChatProviderError("The AI provider request failed. Check the model, endpoint, and API key.") from exc
+
+def ensure_chat_configured() -> None:
+    if not settings.llm_api_key or not settings.llm_model:
+        raise ChatConfigurationError(
+            "AI chat is not configured yet. Set LLM_API_KEY and LLM_MODEL in backend/.env."
+        )
+
+
+def stream_answer(question: str, sources: list[dict[str, Any]]):
+    """Yield validated answer fragments while the provider generates the answer."""
+    ensure_chat_configured()
+    context_blocks = [
+        f"[{source['source_id']}] File: {source['filename']}; "
+        f"page(s) {source['page_start']}-{source['page_end']}\\n"
+        f"EXCERPT:\\n{source['text']}"
+        for source in sources
+    ]
+    try:
+        model = ChatOpenAI(
+            model=settings.llm_model,
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_api_base_url,
+            temperature=0.1,
+            timeout=45,
+            max_retries=1,
+        )
+        chain = PROMPT | model
+        pending = ""
+        for part in chain.stream({"question": question, "context": "\\n\\n---\\n\\n".join(context_blocks)}):
+            content = part.content
+            if isinstance(content, list):
+                content = "".join(item.get("text", "") for item in content if isinstance(item, dict))
+            if not isinstance(content, str) or not content:
+                continue
+            pending += content
+            # Hold a small suffix so citation tokens split across model chunks
+            # are validated before being sent to the browser.
+            if len(pending) > 16:
+                safe, pending = pending[:-16], pending[-16:]
+                safe = validate_source_references(safe, sources)
+                if safe:
+                    yield safe
+        if pending:
+            yield validate_source_references(pending, sources)
+    except ChatConfigurationError:
+        raise
+    except ChatProviderError:
+        raise
+    except Exception as exc:
+        raise ChatProviderError("The AI provider stream failed. Check the model, endpoint, and API key.") from exc
