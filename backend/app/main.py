@@ -24,6 +24,7 @@ from app.services.chunking import chunk_document_text
 
 
 logger = logging.getLogger(__name__)
+NOTIFICATION_STREAM_INTERVAL_SECONDS = 5
 
 
 async def _reminder_worker() -> None:
@@ -120,7 +121,10 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     if request.url.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store"
+        if response.headers.get("content-type", "").startswith("text/event-stream"):
+            response.headers["Cache-Control"] = "no-cache"
+        else:
+            response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -657,6 +661,41 @@ def get_notifications(http_request: Request, unread_only: bool = False, limit: i
         raise HTTPException(status_code=422, detail="Limit must be between 1 and 100.")
     items = case_service.list_notifications(http_request.state.user["id"], unread_only=unread_only, limit=limit)
     return {"items": items, "count": len(items)}
+
+
+@app.get("/api/notifications/stream", tags=["notifications"])
+async def stream_notifications(http_request: Request) -> StreamingResponse:
+    """Stream access-scoped notification snapshots and revalidate the token while connected."""
+    owner_id = http_request.state.user["id"]
+    authorization = http_request.headers.get("Authorization", "")
+    token = authorization[7:].strip() if authorization.startswith("Bearer ") else ""
+
+    async def event_stream():
+        last_payload = None
+        while True:
+            if await http_request.is_disconnected():
+                break
+            active_user = auth_service.user_from_token(token)
+            if not active_user or active_user["id"] != owner_id:
+                yield f"event: error\ndata: {json.dumps({'detail': 'Your session expired or access was revoked. Sign in again.'})}\n\n"
+                break
+            payload = {
+                "items": case_service.list_notifications(owner_id, limit=10),
+                "summary": case_service.dashboard_summary(owner_id),
+            }
+            serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            if serialized != last_payload:
+                yield f"event: snapshot\ndata: {serialized}\n\n"
+                last_payload = serialized
+            else:
+                yield ": keep-alive\n\n"
+            await asyncio.sleep(NOTIFICATION_STREAM_INTERVAL_SECONDS)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 @app.post("/api/notifications/{notification_id}/read", tags=["notifications"])
