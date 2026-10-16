@@ -256,6 +256,15 @@ def current_user(request: Request) -> dict[str, object]:
     return request.state.user
 
 
+@app.post("/api/auth/logout", tags=["authentication"])
+def logout(http_request: Request) -> dict[str, str]:
+    authorization = http_request.headers.get("Authorization", "")
+    token = authorization[7:].strip() if authorization.startswith("Bearer ") else ""
+    if not auth_service.revoke_access_token(token, http_request.state.user["id"]):
+        raise HTTPException(status_code=401, detail="The active session could not be revoked.")
+    return {"message": "Signed out successfully."}
+
+
 @app.get("/api/auth/users", tags=["authentication"])
 def get_users() -> dict[str, object]:
     users = auth_service.list_users()

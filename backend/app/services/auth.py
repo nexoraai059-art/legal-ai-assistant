@@ -101,6 +101,16 @@ def initialize_auth_storage() -> None:
             )"""
         )
         connection.execute("CREATE INDEX IF NOT EXISTS idx_login_failures_ip_created ON login_failures(ip_address, created_at)")
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS auth_sessions (
+                jti TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                revoked_at TEXT
+            )"""
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_expiry ON auth_sessions(user_id, expires_at)")
 
 
 def login_retry_after_seconds(ip_address: str) -> int:
@@ -255,6 +265,11 @@ def set_user_active(user_id: str, is_active: bool) -> dict[str, Any] | None:
             if active_admins <= 1:
                 raise ValueError("The last active administrator cannot be disabled.")
         connection.execute("UPDATE users SET is_active = ? WHERE id = ?", (int(is_active), user_id))
+        if not is_active:
+            connection.execute(
+                "UPDATE auth_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+                (_now(), user_id),
+            )
     return get_user_by_id(user_id)
 
 
@@ -268,17 +283,30 @@ def list_users() -> list[dict[str, Any]]:
 
 def create_access_token(user: dict[str, Any]) -> str:
     now = int(time.time())
+    expires_at = now + max(1, int(settings.access_token_minutes)) * 60
+    session_id = str(uuid4())
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
         "sub": user["id"],
         "role": user["role"],
         "iat": now,
-        "exp": now + settings.access_token_minutes * 60,
-        "jti": str(uuid4()),
+        "exp": expires_at,
+        "jti": session_id,
     }
     unsigned = _b64encode(json.dumps(header, separators=(",", ":")).encode()) + "." + _b64encode(json.dumps(payload, separators=(",", ":")).encode())
     signature = hmac.new(_signing_key(), unsigned.encode("ascii"), hashlib.sha256).digest()
-    return unsigned + "." + _b64encode(signature)
+    token = unsigned + "." + _b64encode(signature)
+    with _connect() as connection:
+        stale_cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        connection.execute(
+            "DELETE FROM auth_sessions WHERE expires_at <= ? OR (revoked_at IS NOT NULL AND revoked_at < ?)",
+            (now, stale_cutoff),
+        )
+        connection.execute(
+            "INSERT INTO auth_sessions (jti, user_id, created_at, expires_at, revoked_at) VALUES (?, ?, ?, ?, NULL)",
+            (session_id, user["id"], _now(), expires_at),
+        )
+    return token
 
 
 def user_from_token(token: str) -> dict[str, Any] | None:
@@ -290,11 +318,48 @@ def user_from_token(token: str) -> dict[str, Any] | None:
             return None
         header = json.loads(_b64decode(header_part))
         payload = json.loads(_b64decode(payload_part))
-        if header.get("alg") != "HS256" or payload.get("exp", 0) <= int(time.time()):
+        now = int(time.time())
+        if header.get("alg") != "HS256" or payload.get("exp", 0) <= now:
             return None
-        user = get_user_by_id(str(payload.get("sub", "")))
+        subject = str(payload.get("sub", ""))
+        session_id = str(payload.get("jti", ""))
+        if not subject or not session_id:
+            return None
+        with _connect() as connection:
+            session = connection.execute(
+                "SELECT user_id, expires_at, revoked_at FROM auth_sessions WHERE jti = ?",
+                (session_id,),
+            ).fetchone()
+        if (
+            session is None
+            or session["user_id"] != subject
+            or session["revoked_at"] is not None
+            or session["expires_at"] <= now
+        ):
+            return None
+        user = get_user_by_id(subject)
         if not user or not user.get("is_active"):
             return None
         return user
-    except (ValueError, TypeError, KeyError, json.JSONDecodeError, RuntimeError):
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError, RuntimeError, sqlite3.Error):
         return None
+
+
+def revoke_access_token(token: str, user_id: str) -> bool:
+    user = user_from_token(token)
+    if not user or user["id"] != user_id:
+        return False
+    try:
+        payload_part = token.split(".")[1]
+        payload = json.loads(_b64decode(payload_part))
+        session_id = str(payload.get("jti", ""))
+        if not session_id:
+            return False
+        with _connect() as connection:
+            cursor = connection.execute(
+                "UPDATE auth_sessions SET revoked_at = ? WHERE jti = ? AND user_id = ? AND revoked_at IS NULL",
+                (_now(), session_id, user_id),
+            )
+        return cursor.rowcount > 0
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError, sqlite3.Error):
+        return False

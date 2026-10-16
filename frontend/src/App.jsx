@@ -155,6 +155,13 @@ export default function App() {
   }
 
   function handleLogout() {
+    const tokenToRevoke = currentAccessToken;
+    if (tokenToRevoke) {
+      rawFetch(API_BASE + "/api/auth/logout", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + tokenToRevoke },
+      }).catch(() => {});
+    }
     currentAccessToken = "";
     setAccessToken("");
     setAuthUser(null);

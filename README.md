@@ -13,7 +13,7 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 - Streaming: Server-Sent Events (SSE)
 
 ## Implemented
-- One-time first-admin bootstrap, login, expiring bearer tokens, PBKDF2 password hashing, role-based write permissions, admin user management, and account disabling.
+- One-time first-admin bootstrap, login/logout, expiring server-revocable bearer sessions, PBKDF2 password hashing, role-based write permissions, admin user management, and account disabling that revokes active sessions.
 - Per-account isolation for documents, semantic retrieval, cases, deadlines, notifications, activity history, and dashboard metrics.
 - Owner-managed case and document sharing by active account email, with read-only or write permissions, access-scoped deadlines/notifications, and immediate revocation.
 - API security headers, no-store caching for API responses, and per-IP failed-login throttling (10 attempts per 15 minutes by default).
@@ -72,7 +72,7 @@ cd backend
 
 ## API endpoints
 - `GET /api/auth/bootstrap/status`, `POST /api/auth/bootstrap` — one-time first-admin setup.
-- `POST /api/auth/login`, `GET /api/auth/me` — sign in and current account.
+- `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me` — sign in, revoke the current session, and inspect the current account.
 - `GET /api/auth/users`, `POST /api/auth/users`, `PATCH /api/auth/users/{id}/active` — admin account management.
 - `POST /api/documents` — multipart PDF upload; form field `file`.
 - `GET /api/documents/{id}/shares`, `POST /api/documents/{id}/shares`, `DELETE /api/documents/{id}/shares/{user_id}` — owner-managed document sharing.

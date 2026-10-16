@@ -751,3 +751,35 @@ def test_notification_stream_emits_access_scoped_snapshot(client, monkeypatch):
     assert '"items":[]' in stream
     assert '"summary":' in stream
     assert client.get("/api/notifications/stream", headers={"Authorization": ""}).status_code == 401
+
+
+
+def test_logout_revokes_the_current_bearer_session(client):
+    token_header = client.headers["Authorization"]
+    logout = client.post("/api/auth/logout")
+    assert logout.status_code == 200, logout.text
+    assert logout.json()["message"] == "Signed out successfully."
+    assert client.get("/api/auth/me", headers={"Authorization": token_header}).status_code == 401
+
+
+def test_disabling_then_reenabling_user_does_not_restore_old_session(client):
+    created = client.post("/api/auth/users", json={
+        "full_name": "Session Revocation User",
+        "email": "session-revocation@example.test",
+        "password": "SessionRevocationPassword123!",
+        "role": "lawyer",
+    })
+    assert created.status_code == 201, created.text
+    user_id = created.json()["id"]
+    login = client.post("/api/auth/login", data={
+        "username": "session-revocation@example.test",
+        "password": "SessionRevocationPassword123!",
+    })
+    assert login.status_code == 200
+    old_token = "Bearer " + login.json()["access_token"]
+
+    disabled = client.patch(f"/api/auth/users/{user_id}/active", json={"is_active": False})
+    assert disabled.status_code == 200, disabled.text
+    enabled = client.patch(f"/api/auth/users/{user_id}/active", json={"is_active": True})
+    assert enabled.status_code == 200, enabled.text
+    assert client.get("/api/auth/me", headers={"Authorization": old_token}).status_code == 401
