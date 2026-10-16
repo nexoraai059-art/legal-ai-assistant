@@ -5,32 +5,69 @@ AI-assisted legal research for document-grounded answers with citations, real-ti
 ## Stack
 - Frontend: React + Vite
 - Backend: Python + FastAPI
-- RAG orchestration: LangChain (planned)
-- LLM: hosted LLM API (server-side secret)
-- Embeddings: hosted embedding API or BGE-M3 in a cloud runtime
-- Vector search: choose ChromaDB or Qdrant
-- Real-time: FastAPI WebSockets + Redis Pub/Sub
 - PDF extraction: PyMuPDF
-- Compliance NER: spaCy
-- Background reminders: Celery or RQ if needed
-- Evaluation: RAGAS and latency benchmarks
+- Local development metadata: SQLite
+- Planned retrieval: embeddings + ChromaDB or Qdrant
+- Planned RAG orchestration: LangChain + hosted LLM API
+- Planned real-time: FastAPI SSE/WebSockets
 
-## Current status
-Phase 1 foundation only: project layout, environment template, FastAPI health endpoint, and React dashboard shell. Document ingestion, authentication, retrieval, streaming, monitoring, and reminders are not implemented yet.
+## Current implementation
+- FastAPI health endpoint and React workspace shell.
+- PDF upload with extension, MIME, signature, size, page-count, and password-protection checks.
+- Text extraction with page markers using PyMuPDF.
+- UUID-based file storage, SHA-256 file hashes, SQLite metadata, list/detail/delete endpoints.
+- React document library with upload, filename filtering, extracted-text preview, and delete.
+- Backend tests for health, upload/extraction/list/detail/delete, and invalid uploads.
 
-## Cloud-first approach
-Use a cloud development environment connected to this GitHub repository. Provision persistent document storage, an application database, a vector database, and Redis as hosted services where required. A hosted LLM API avoids downloading local LLM weights. A hosted embedding provider avoids downloading BGE-M3 weights.
+Not implemented yet: authentication/authorization, semantic retrieval, RAG chat, streaming, case tracking, reminders, notifications, and deployment hardening.
 
-## Security
-- Never commit real API keys or credentials.
-- Store secrets in the deployment platform's environment settings.
-- Enforce user- and case-level authorization before retrieving document chunks.
-- Treat AI answers as research assistance, not legal advice; verify citations and deadlines.
+## Windows development setup
+Open two terminals from the repository root.
 
-## Backend start
-From the backend directory in a Python environment: install requirements, then run `uvicorn app.main:app --reload`. Health check: `/health`; API docs: `/docs`.
+### 1. Backend
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
 
-## Frontend start
-From the frontend directory in a Node.js environment: run `npm install`, then `npm run dev`.
+API docs: http://127.0.0.1:8000/docs
+Health check: http://127.0.0.1:8000/health
 
-These commands have not been executed in this repository environment.
+### 2. Frontend
+```powershell
+cd frontend
+npm ci
+Copy-Item .env.example .env
+npm run dev
+```
+
+Open the URL printed by Vite, usually http://localhost:5173.
+
+### 3. Tests
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+## Document API
+- `POST /api/documents` — multipart upload; form field `file`.
+- `GET /api/documents` — list document metadata.
+- `GET /api/documents/{id}` — document metadata and extracted text.
+- `DELETE /api/documents/{id}` — delete stored file and metadata.
+
+Defaults: 15 MB maximum upload and 500 pages per PDF. Change `MAX_UPLOAD_MB` and `MAX_PDF_PAGES` in the backend environment.
+
+## Local data and privacy
+By default, PDFs and the SQLite database are stored under `backend/data/`, which is ignored by Git. Stored files use generated UUID filenames, not user-provided paths. Keep this folder backed up if local persistence matters. No OCR is performed on scanned/image-only PDFs yet.
+
+**Security limitation:** document endpoints currently have no login or case-level authorization. This is a local development milestone only. Do not expose the API publicly or upload confidential client files until authentication, authorization, and production storage protections are implemented.
+
+## Legal reliability
+AI features are planned and must cite source passages. Do not invent authorities, quotations, or deadlines. Treat generated content as research assistance rather than legal advice, and independently verify all legal sources and dates.
+
+## Dataset samples
+Benchmark samples are stored under `datasets/generated/`. Review each dataset's licence and terms before training, redistribution, or production use. These benchmark samples are not a store for private case documents.
