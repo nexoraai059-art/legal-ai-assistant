@@ -15,7 +15,7 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 ## Implemented
 - One-time first-admin bootstrap, login, expiring bearer tokens, PBKDF2 password hashing, role-based write permissions, admin user management, and account disabling.
 - Per-account isolation for documents, semantic retrieval, cases, deadlines, notifications, activity history, and dashboard metrics.
-- API security headers and no-store caching for API responses.
+- API security headers, no-store caching for API responses, and per-IP failed-login throttling (10 attempts per 15 minutes by default).
 - PDF upload validation, extraction, local file storage, SHA-256 hashes, metadata, listing, preview, and deletion.
 - Page-aware overlapping chunks, hosted embeddings, persistent ChromaDB indexing, and semantic search.
 - Document-grounded RAG chat that provides source labels and document/page metadata; unknown source labels are removed.
@@ -27,7 +27,7 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 
 ## Still outstanding
 - Per-case sharing/invitations and organization tenancy; records are isolated by account, but users cannot securely share a case with collaborators.
-- Password reset, MFA, refresh-token revocation, login rate limiting, and production audit identity.
+- Password reset, MFA, refresh-token revocation, and production audit identity.
 - OCR for scanned PDFs, email/SMS/push notifications, and calendar integrations.
 - Real-time notification push to connected browsers (current deadline notifications are persisted in-app; chat streams over SSE).
 - Automated hosted-provider evaluation, full security review, deployment, and production backup/restore.
@@ -44,7 +44,7 @@ python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
-Copy the generated random value into `JWT_SECRET_KEY` in `backend/.env`. Also set `EMBEDDING_API_KEY`, `LLM_API_KEY`, and `LLM_MODEL`. Keep real keys out of Git. Then run:
+Copy the generated random value into `JWT_SECRET_KEY` in `backend/.env`. Also set `EMBEDDING_API_KEY`, `LLM_API_KEY`, and `LLM_MODEL`. Login throttling defaults to 10 failed attempts per 15 minutes; adjust `LOGIN_RATE_LIMIT_ATTEMPTS` and `LOGIN_RATE_LIMIT_WINDOW_MINUTES` if needed. Keep real keys out of Git. Then run:
 ```powershell
 python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```

@@ -515,3 +515,18 @@ def test_vector_store_backfills_legacy_chunk_ownership(client):
     assert legacy_chunk_id in migrated["ids"]
     migrated_metadata = migrated["metadatas"][migrated["ids"].index(legacy_chunk_id)]
     assert migrated_metadata["owner_id"] == owner_id
+
+def test_login_rate_limits_repeated_failed_attempts(client):
+    for _ in range(config.settings.login_rate_limit_attempts):
+        failed = client.post("/api/auth/login", data={
+            "username": "missing-user@example.test",
+            "password": "IncorrectPassword123!",
+        })
+        assert failed.status_code == 401
+
+    blocked = client.post("/api/auth/login", data={
+        "username": "admin@example.test",
+        "password": "StrongTestPassword123!",
+    })
+    assert blocked.status_code == 429
+    assert int(blocked.headers["retry-after"]) > 0
