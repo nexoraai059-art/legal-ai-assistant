@@ -13,6 +13,8 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 - Streaming: Server-Sent Events (SSE)
 
 ## Implemented
+- One-time first-admin bootstrap, login, expiring bearer tokens, PBKDF2 password hashing, role-based write permissions, admin user management, and account disabling.
+- API security headers and no-store caching for API responses.
 - PDF upload validation, extraction, local file storage, SHA-256 hashes, metadata, listing, preview, and deletion.
 - Page-aware overlapping chunks, hosted embeddings, persistent ChromaDB indexing, and semantic search.
 - Document-grounded RAG chat that provides source labels and document/page metadata; unknown source labels are removed.
@@ -23,8 +25,8 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 - Automated tests for document lifecycle, retrieval, chat citations, SSE, and deadline reminders.
 
 ## Still outstanding
-- Authentication, session management, and case-level authorization.
-- User/organization ownership, secure document sharing, and production audit identity.
+- Case-level authorization and user/organization ownership: authenticated accounts currently share the same cases and documents.
+- Per-case sharing, password reset, MFA, refresh-token revocation, and production audit identity.
 - OCR for scanned PDFs, email/SMS/push notifications, and calendar integrations.
 - Real-time notification push to connected browsers (current deadline notifications are persisted in-app; chat streams over SSE).
 - Automated hosted-provider evaluation, full security review, deployment, and production backup/restore.
@@ -39,8 +41,9 @@ python -m venv .venv
 .\\.venv\\Scripts\\Activate.ps1
 python -m pip install -r requirements.txt
 Copy-Item .env.example .env
+python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
-Edit `backend/.env` and set `EMBEDDING_API_KEY`, `LLM_API_KEY`, and `LLM_MODEL`. Keep real keys out of Git. Then run:
+Copy the generated random value into `JWT_SECRET_KEY` in `backend/.env`. Also set `EMBEDDING_API_KEY`, `LLM_API_KEY`, and `LLM_MODEL`. Keep real keys out of Git. Then run:
 ```powershell
 python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
@@ -65,6 +68,9 @@ cd backend
 ```
 
 ## API endpoints
+- `GET /api/auth/bootstrap/status`, `POST /api/auth/bootstrap` — one-time first-admin setup.
+- `POST /api/auth/login`, `GET /api/auth/me` — sign in and current account.
+- `GET /api/auth/users`, `POST /api/auth/users`, `PATCH /api/auth/users/{id}/active` — admin account management.
 - `POST /api/documents` — multipart PDF upload; form field `file`.
 - `GET /api/documents` and `GET /api/documents/{id}` — document metadata and extracted text.
 - `POST /api/documents/{id}/index` — chunk, embed, and index a document.
@@ -84,7 +90,7 @@ Defaults: 15 MB maximum upload and 500 pages per PDF. Change `MAX_UPLOAD_MB` and
 ## Local data and privacy
 By default, PDFs, SQLite metadata, and the ChromaDB index are stored under `backend/data/`, which is ignored by Git. Stored files use generated UUID filenames, not user-provided paths. Keep this folder backed up if local persistence matters. Scanned/image-only PDFs currently need OCR, which is not yet implemented.
 
-**Security limitation:** the API does not yet have login or case-level authorization. It is for local development only. Do not expose the API publicly or upload confidential client files until authentication, authorization, and production storage protections are implemented. Hosted embeddings and chat send extracted passages to the configured provider; review provider privacy and data-processing terms before confidential use. Do not commit `.env` files or API keys.
+**Security limitation:** login and role-based write permissions are implemented, but case-level authorization is not. All signed-in users can currently read the same case/document workspace, so this is for local development only. Do not expose the API publicly or upload confidential client files until case-level isolation and production hardening are complete. Hosted embeddings and chat send extracted passages to the configured provider; review provider privacy and data-processing terms before confidential use. Do not commit `.env` files or API keys.
 
 ## Deadline reliability
 The application never automatically invents or saves legal deadlines. A person must confirm the date before it can be stored. Optional source document and page references are validated against uploaded documents. Reminder generation is based only on the stored, confirmed date; independently verify all legal dates and required actions.
