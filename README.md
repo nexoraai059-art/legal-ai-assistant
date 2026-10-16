@@ -6,20 +6,21 @@ AI-assisted legal research for document-grounded answers with citations, real-ti
 - Frontend: React + Vite
 - Backend: Python + FastAPI
 - PDF extraction: PyMuPDF
-- Local development metadata: SQLite
-- Planned retrieval: embeddings + ChromaDB or Qdrant
+- Metadata: SQLite
+- Vector retrieval: ChromaDB with cosine similarity
+- Embeddings: OpenAI-compatible hosted embeddings API (default model `text-embedding-3-small`)
 - Planned RAG orchestration: LangChain + hosted LLM API
 - Planned real-time: FastAPI SSE/WebSockets
 
 ## Current implementation
 - FastAPI health endpoint and React workspace shell.
-- PDF upload with extension, MIME, signature, size, page-count, and password-protection checks.
-- Text extraction with page markers using PyMuPDF.
-- UUID-based file storage, SHA-256 file hashes, SQLite metadata, list/detail/delete endpoints.
-- React document library with upload, filename filtering, extracted-text preview, and delete.
-- Backend tests for health, upload/extraction/list/detail/delete, and invalid uploads.
+- PDF upload validation, text extraction, local file storage, SHA-256 hashes, SQLite metadata, list/detail/delete APIs.
+- Page-aware text chunking with overlap and source page numbers.
+- Hosted embedding provider integration and persistent ChromaDB indexing.
+- Semantic search API and dashboard controls to index documents, search passages, and inspect page references.
+- Backend tests for document lifecycle and text chunking.
 
-Not implemented yet: authentication/authorization, semantic retrieval, RAG chat, streaming, case tracking, reminders, notifications, and deployment hardening.
+Not implemented yet: authentication/authorization, cited LLM answers (RAG chat), streaming, case tracking, reminders, notifications, and deployment hardening.
 
 ## Windows development setup
 Open two terminals from the repository root.
@@ -28,9 +29,12 @@ Open two terminals from the repository root.
 ```powershell
 cd backend
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+.\\.venv\\Scripts\\Activate.ps1
 python -m pip install -r requirements.txt
 Copy-Item .env.example .env
+```
+Edit `backend/.env` and set `EMBEDDING_API_KEY` for semantic indexing and search. Keep real keys out of Git. Then run:
+```powershell
 python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
@@ -50,24 +54,26 @@ Open the URL printed by Vite, usually http://localhost:5173.
 ### 3. Tests
 ```powershell
 cd backend
-.\.venv\Scripts\python.exe -m pytest -q
+.\\.venv\\Scripts\\python.exe -m pytest -q
 ```
 
-## Document API
+## API endpoints
 - `POST /api/documents` — multipart upload; form field `file`.
-- `GET /api/documents` — list document metadata.
+- `GET /api/documents` — list document metadata and index status.
 - `GET /api/documents/{id}` — document metadata and extracted text.
-- `DELETE /api/documents/{id}` — delete stored file and metadata.
+- `POST /api/documents/{id}/index` — chunk, embed, and index a document.
+- `POST /api/search` — semantic search; JSON body: `{"query":"...","limit":5}`.
+- `DELETE /api/documents/{id}` — delete stored file, metadata, and vector chunks.
 
 Defaults: 15 MB maximum upload and 500 pages per PDF. Change `MAX_UPLOAD_MB` and `MAX_PDF_PAGES` in the backend environment.
 
 ## Local data and privacy
-By default, PDFs and the SQLite database are stored under `backend/data/`, which is ignored by Git. Stored files use generated UUID filenames, not user-provided paths. Keep this folder backed up if local persistence matters. No OCR is performed on scanned/image-only PDFs yet.
+By default, PDFs, SQLite metadata, and the ChromaDB index are stored under `backend/data/`, which is ignored by Git. Stored files use generated UUID filenames, not user-provided paths. Keep this folder backed up if local persistence matters. Scanned/image-only PDFs currently need OCR, which is not yet implemented.
 
-**Security limitation:** document endpoints currently have no login or case-level authorization. This is a local development milestone only. Do not expose the API publicly or upload confidential client files until authentication, authorization, and production storage protections are implemented.
+**Security limitation:** document and search endpoints currently have no login or case-level authorization. This is a local development milestone only. Do not expose the API publicly or upload confidential client files until authentication, authorization, and production storage protections are implemented. When using hosted embeddings, extracted legal text is sent to the configured embedding provider; confirm the provider's privacy and data-processing terms before using confidential files.
 
 ## Legal reliability
-AI features are planned and must cite source passages. Do not invent authorities, quotations, or deadlines. Treat generated content as research assistance rather than legal advice, and independently verify all legal sources and dates.
+Retrieval results show source document and page metadata; they are not legal conclusions. The planned chat must ground claims in source passages and must not invent authorities, quotations, or deadlines. Treat generated content as research assistance rather than legal advice, and independently verify all legal sources and dates.
 
 ## Dataset samples
 Benchmark samples are stored under `datasets/generated/`. Review each dataset's licence and terms before training, redistribution, or production use. These benchmark samples are not a store for private case documents.
