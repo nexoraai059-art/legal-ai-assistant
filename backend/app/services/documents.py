@@ -19,6 +19,7 @@ UPLOAD_DIR = settings.data_dir / "documents"
 def _connect() -> sqlite3.Connection:
     connection = sqlite3.connect(DB_PATH, timeout=10)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
 
@@ -50,6 +51,17 @@ def initialize_storage() -> None:
                 connection.execute("UPDATE documents SET owner_id = ? WHERE owner_id = 'legacy'", (admin["id"],))
         connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at DESC)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_owner_id ON documents(owner_id)")
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS document_shares (
+                document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                permission TEXT NOT NULL CHECK(permission IN ('read', 'write')),
+                granted_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (document_id, user_id)
+            )"""
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_document_shares_user ON document_shares(user_id)")
 
 
 def insert_document(document: dict[str, Any]) -> None:
@@ -67,10 +79,14 @@ def insert_document(document: dict[str, Any]) -> None:
 def list_documents(owner_id: str) -> list[dict[str, Any]]:
     with _connect() as connection:
         rows = connection.execute(
-            """SELECT id, original_filename, content_type, size_bytes, sha256,
-                      page_count, length(extracted_text) AS extracted_characters, created_at
-               FROM documents WHERE owner_id = ? ORDER BY created_at DESC""",
-            (owner_id,),
+            """SELECT d.id, d.original_filename, d.content_type, d.size_bytes, d.sha256,
+                      d.page_count, length(d.extracted_text) AS extracted_characters, d.created_at,
+                      CASE WHEN d.owner_id = ? THEN 'owner' ELSE s.permission END AS access_level
+               FROM documents d
+               LEFT JOIN document_shares s ON s.document_id = d.id AND s.user_id = ?
+               WHERE d.owner_id = ? OR s.user_id = ?
+               ORDER BY d.created_at DESC""",
+            (owner_id, owner_id, owner_id, owner_id),
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -78,12 +94,86 @@ def list_documents(owner_id: str) -> list[dict[str, Any]]:
 def get_document(document_id: str, owner_id: str) -> dict[str, Any] | None:
     with _connect() as connection:
         row = connection.execute(
-            """SELECT id, original_filename, content_type, size_bytes, sha256,
-                      page_count, extracted_text, created_at
-               FROM documents WHERE id = ? AND owner_id = ?""",
-            (document_id, owner_id),
+            """SELECT d.id, d.owner_id, d.original_filename, d.content_type, d.size_bytes, d.sha256,
+                      d.page_count, d.extracted_text, d.created_at,
+                      CASE WHEN d.owner_id = ? THEN 'owner' ELSE s.permission END AS access_level
+               FROM documents d
+               LEFT JOIN document_shares s ON s.document_id = d.id AND s.user_id = ?
+               WHERE d.id = ? AND (d.owner_id = ? OR s.user_id = ?)""",
+            (owner_id, owner_id, document_id, owner_id, owner_id),
         ).fetchone()
     return dict(row) if row else None
+
+
+def list_document_shares(document_id: str, owner_id: str) -> list[dict[str, Any]] | None:
+    with _connect() as connection:
+        document = connection.execute(
+            "SELECT 1 FROM documents WHERE id = ? AND owner_id = ?", (document_id, owner_id)
+        ).fetchone()
+        if document is None:
+            return None
+        rows = connection.execute(
+            """SELECT s.user_id, u.full_name, u.email, s.permission, s.created_at
+               FROM document_shares s JOIN users u ON u.id = s.user_id
+               WHERE s.document_id = ? ORDER BY u.full_name COLLATE NOCASE""",
+            (document_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def share_document(document_id: str, owner_id: str, email: str, permission: str) -> dict[str, Any]:
+    if permission not in {"read", "write"}:
+        raise ValueError("Permission must be read or write.")
+    clean_email = email.strip().lower()
+    if len(clean_email) > 254 or "@" not in clean_email:
+        raise ValueError("Enter a valid account email address.")
+    with _connect() as connection:
+        document = connection.execute(
+            "SELECT 1 FROM documents WHERE id = ? AND owner_id = ?", (document_id, owner_id)
+        ).fetchone()
+        if document is None:
+            raise ValueError("Document not found or you are not its owner.")
+        target = connection.execute(
+            "SELECT id, full_name, email, role FROM users WHERE lower(email) = ? AND is_active = 1",
+            (clean_email,),
+        ).fetchone()
+        if target is None:
+            raise ValueError("No active account exists for that email address.")
+        if target["id"] == owner_id:
+            raise ValueError("The document owner already has full access.")
+        if permission == "write" and target["role"] == "viewer":
+            raise ValueError("Viewer accounts can only receive read access.")
+        created_at = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """INSERT INTO document_shares (document_id, user_id, permission, granted_by, created_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(document_id, user_id) DO UPDATE SET
+                 permission = excluded.permission, granted_by = excluded.granted_by,
+                 created_at = excluded.created_at""",
+            (document_id, target["id"], permission, owner_id, created_at),
+        )
+    return {
+        "document_id": document_id,
+        "user_id": target["id"],
+        "full_name": target["full_name"],
+        "email": target["email"],
+        "permission": permission,
+        "created_at": created_at,
+    }
+
+
+def revoke_document_share(document_id: str, owner_id: str, user_id: str) -> bool:
+    with _connect() as connection:
+        document = connection.execute(
+            "SELECT 1 FROM documents WHERE id = ? AND owner_id = ?", (document_id, owner_id)
+        ).fetchone()
+        if document is None:
+            return False
+        cursor = connection.execute(
+            "DELETE FROM document_shares WHERE document_id = ? AND user_id = ?",
+            (document_id, user_id),
+        )
+    return cursor.rowcount > 0
 
 
 def delete_document(document_id: str, owner_id: str) -> bool:
