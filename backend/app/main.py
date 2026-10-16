@@ -5,20 +5,24 @@ from uuid import uuid4
 import fitz
 from fastapi import FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.services import documents as document_store
+from app.services import embeddings, vector_store
+from app.services.chunking import chunk_document_text
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     document_store.initialize_storage()
+    vector_store.initialize_vector_store()
     yield
 
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.2.0",
+    version="0.3.0",
     description="Real-time legal research and compliance assistant API.",
     lifespan=lifespan,
 )
@@ -29,6 +33,19 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+class SearchRequest(BaseModel):
+    query: str = Field(min_length=3, max_length=1000)
+    limit: int = Field(default=5, ge=1, le=10)
+
+
+def _embedding_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, embeddings.EmbeddingConfigurationError):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, embeddings.EmbeddingProviderError):
+        return HTTPException(status_code=502, detail=str(exc))
+    return HTTPException(status_code=502, detail="The embedding operation failed.")
 
 
 @app.get("/health", tags=["health"])
@@ -102,6 +119,7 @@ def upload_document(file: UploadFile = File(...)) -> dict[str, object]:
         "page_count": page_count,
         "extracted_characters": len(extracted_text),
         "text_extracted": bool(extracted_text),
+        "indexed": False,
         "created_at": record["created_at"],
     }
 
@@ -109,6 +127,8 @@ def upload_document(file: UploadFile = File(...)) -> dict[str, object]:
 @app.get("/api/documents", tags=["documents"])
 def documents_list() -> dict[str, object]:
     documents = document_store.list_documents()
+    for document in documents:
+        document["indexed"] = vector_store.document_is_indexed(document["id"])
     return {"items": documents, "count": len(documents)}
 
 
@@ -117,11 +137,58 @@ def document_detail(document_id: str) -> dict[str, object]:
     document = document_store.get_document(document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found.")
+    document["indexed"] = vector_store.document_is_indexed(document_id)
     return document
+
+
+@app.post("/api/documents/{document_id}/index", tags=["search"])
+def index_document(document_id: str) -> dict[str, object]:
+    document = document_store.get_document(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    chunks = chunk_document_text(document["extracted_text"])
+    if not chunks:
+        raise HTTPException(
+            status_code=422,
+            detail="No selectable text was found. Scanned PDFs need OCR, which is not supported yet.",
+        )
+    try:
+        vectors = embeddings.embed_texts([chunk["text"] for chunk in chunks])
+    except (embeddings.EmbeddingConfigurationError, embeddings.EmbeddingProviderError) as exc:
+        raise _embedding_error(exc) from exc
+    try:
+        vector_store.replace_document_chunks(
+            document_id=document_id,
+            filename=document["original_filename"],
+            chunks=chunks,
+            embeddings=vectors,
+            model=settings.embedding_model,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="The document could not be indexed.") from exc
+    return {"document_id": document_id, "filename": document["original_filename"], "chunks_indexed": len(chunks), "embedding_model": settings.embedding_model}
+
+
+@app.post("/api/search", tags=["search"])
+def semantic_search(request: SearchRequest) -> dict[str, object]:
+    if vector_store.indexed_chunk_count() == 0:
+        return {"query": request.query, "items": [], "count": 0, "message": "No indexed document chunks yet. Index a PDF first."}
+    try:
+        query_vector = embeddings.embed_texts([request.query])[0]
+    except (embeddings.EmbeddingConfigurationError, embeddings.EmbeddingProviderError) as exc:
+        raise _embedding_error(exc) from exc
+    results = vector_store.search_chunks(query_vector, limit=request.limit)
+    return {"query": request.query, "items": results, "count": len(results)}
 
 
 @app.delete("/api/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["documents"])
 def document_delete(document_id: str) -> None:
+    if document_store.get_document(document_id) is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    try:
+        vector_store.remove_document_chunks(document_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="The document index could not be removed.") from exc
     if not document_store.delete_document(document_id):
         raise HTTPException(status_code=404, detail="Document not found.")
     return None
