@@ -159,9 +159,9 @@ def test_chat_returns_answer_with_document_page_sources(client, monkeypatch):
         files={"file": ("agreement.pdf", make_pdf("The supplier must provide thirty days written notice."), "application/pdf")},
     )
     document_id = upload.json()["id"]
-    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None: 1)
+    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None, document_ids=None: 1)
     monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
-    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None: [{
+    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None, document_ids=None: [{
         "document_id": document_id,
         "filename": "agreement.pdf",
         "page_start": 1,
@@ -182,9 +182,9 @@ def test_chat_returns_answer_with_document_page_sources(client, monkeypatch):
 
 
 def test_chat_requires_llm_configuration(client, monkeypatch):
-    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None: 1)
+    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None, document_ids=None: 1)
     monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
-    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None: [{
+    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None, document_ids=None: [{
         "document_id": "doc-1", "filename": "agreement.pdf", "page_start": 1,
         "page_end": 1, "chunk_index": 0, "score": 0.8, "text": "[Page 1] notice terms",
     }])
@@ -205,9 +205,9 @@ def test_chat_removes_unknown_source_labels():
     assert "[unverified source reference omitted]" in validated
 
 def test_chat_stream_sends_sse_source_token_and_done_events(client, monkeypatch):
-    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None: 1)
+    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None, document_ids=None: 1)
     monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
-    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None: [{
+    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None, document_ids=None: [{
         "document_id": "doc-1", "filename": "notice.pdf", "page_start": 2,
         "page_end": 2, "chunk_index": 0, "score": 0.9, "text": "[Page 2] Written notice is required.",
     }])
@@ -225,9 +225,9 @@ def test_chat_stream_sends_sse_source_token_and_done_events(client, monkeypatch)
 
 
 def test_chat_stream_rejects_missing_llm_configuration_before_streaming(client, monkeypatch):
-    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None: 1)
+    monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None, document_ids=None: 1)
     monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
-    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None: [{
+    monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None, document_ids=None: [{
         "document_id": "doc-1", "filename": "notice.pdf", "page_start": 1,
         "page_end": 1, "chunk_index": 0, "score": 0.9, "text": "[Page 1] Notice terms.",
     }])
@@ -530,3 +530,93 @@ def test_login_rate_limits_repeated_failed_attempts(client):
     })
     assert blocked.status_code == 429
     assert int(blocked.headers["retry-after"]) > 0
+
+def test_document_sharing_permissions_search_and_revocation(client, monkeypatch):
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    owner_authorization = client.headers["Authorization"]
+    upload = client.post(
+        "/api/documents",
+        files={"file": ("shared-contract.pdf", make_pdf("Private agreement termination clause."), "application/pdf")},
+    )
+    assert upload.status_code == 201, upload.text
+    document_id = upload.json()["id"]
+    assert client.post(f"/api/documents/{document_id}/index").status_code == 200
+
+    viewer = client.post("/api/auth/users", json={
+        "full_name": "Read Only Collaborator",
+        "email": "read-share@example.test",
+        "password": "ReadOnlyPassword123!",
+        "role": "viewer",
+    })
+    assert viewer.status_code == 201, viewer.text
+    viewer_id = viewer.json()["id"]
+    share_read = client.post(f"/api/documents/{document_id}/shares", json={
+        "email": "read-share@example.test",
+        "permission": "read",
+    })
+    assert share_read.status_code == 201, share_read.text
+    owner_shares = client.get(f"/api/documents/{document_id}/shares")
+    assert owner_shares.status_code == 200
+    assert owner_shares.json()["count"] == 1
+
+    viewer_login = client.post("/api/auth/login", data={
+        "username": "read-share@example.test",
+        "password": "ReadOnlyPassword123!",
+    })
+    assert viewer_login.status_code == 200
+    viewer_authorization = "Bearer " + viewer_login.json()["access_token"]
+    client.headers.update({"Authorization": viewer_authorization})
+    visible = client.get("/api/documents").json()
+    assert visible["count"] == 1
+    assert visible["items"][0]["access_level"] == "read"
+    assert client.get(f"/api/documents/{document_id}").json()["access_level"] == "read"
+    assert client.post(f"/api/documents/{document_id}/index").status_code == 403
+    assert client.get(f"/api/documents/{document_id}/shares").status_code == 404
+    assert client.post(f"/api/documents/{document_id}/shares", json={
+        "email": "read-share@example.test",
+        "permission": "read",
+    }).status_code == 404
+    search = client.post("/api/search", json={"query": "agreement termination"})
+    assert search.status_code == 200
+    assert [item["filename"] for item in search.json()["items"]] == ["shared-contract.pdf"]
+    assert client.get("/api/dashboard/summary").json()["documents"] == 1
+
+    client.headers.update({"Authorization": owner_authorization})
+    assert client.post(f"/api/documents/{document_id}/shares", json={
+        "email": "read-share@example.test",
+        "permission": "write",
+    }).status_code == 422
+
+    lawyer = client.post("/api/auth/users", json={
+        "full_name": "Write Collaborator",
+        "email": "write-share@example.test",
+        "password": "WriteAccessPassword123!",
+        "role": "lawyer",
+    })
+    assert lawyer.status_code == 201, lawyer.text
+    lawyer_id = lawyer.json()["id"]
+    share_write = client.post(f"/api/documents/{document_id}/shares", json={
+        "email": "write-share@example.test",
+        "permission": "write",
+    })
+    assert share_write.status_code == 201, share_write.text
+
+    lawyer_login = client.post("/api/auth/login", data={
+        "username": "write-share@example.test",
+        "password": "WriteAccessPassword123!",
+    })
+    assert lawyer_login.status_code == 200
+    client.headers.update({"Authorization": "Bearer " + lawyer_login.json()["access_token"]})
+    lawyer_docs = client.get("/api/documents").json()
+    assert lawyer_docs["count"] == 1
+    assert lawyer_docs["items"][0]["access_level"] == "write"
+    assert client.post(f"/api/documents/{document_id}/index").status_code == 200
+
+    client.headers.update({"Authorization": owner_authorization})
+    assert client.delete(f"/api/documents/{document_id}/shares/{viewer_id}").status_code == 204
+    assert client.delete(f"/api/documents/{document_id}/shares/{lawyer_id}").status_code == 204
+    client.headers.update({"Authorization": viewer_authorization})
+    assert client.get("/api/documents").json()["count"] == 0
+    assert client.post("/api/search", json={"query": "agreement termination"}).json()["count"] == 0
+    client.headers.update({"Authorization": "Bearer " + lawyer_login.json()["access_token"]})
+    assert client.get("/api/documents").json()["count"] == 0
