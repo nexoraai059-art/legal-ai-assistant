@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     app_name: str = "Legal AI Assistant"
     app_env: str = "development"
     cors_origins: list[str] = ["http://localhost:5173"]
+    jwt_secret_key: str = ""
+    access_token_minutes: int = 60
     llm_api_key: str = ""
     llm_api_base_url: str = "https://api.openai.com/v1"
     llm_model: str = ""
