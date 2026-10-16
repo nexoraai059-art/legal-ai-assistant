@@ -15,7 +15,7 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 ## Implemented
 - One-time first-admin bootstrap, login, expiring bearer tokens, PBKDF2 password hashing, role-based write permissions, admin user management, and account disabling.
 - Per-account isolation for documents, semantic retrieval, cases, deadlines, notifications, activity history, and dashboard metrics.
-- Owner-managed document sharing by active account email, with read-only or indexing permission and immediate revocation.
+- Owner-managed case and document sharing by active account email, with read-only or write permissions, access-scoped deadlines/notifications, and immediate revocation.
 - API security headers, no-store caching for API responses, and per-IP failed-login throttling (10 attempts per 15 minutes by default).
 - PDF upload validation, extraction, local file storage, SHA-256 hashes, metadata, listing, preview, and deletion.
 - Page-aware overlapping chunks, hosted embeddings, persistent ChromaDB indexing, and semantic search.
@@ -24,10 +24,10 @@ A local-first workspace for managing legal documents, retrieving relevant passag
 - Case register, case status, user-confirmed deadlines, source document/page association, deadline completion, and activity logs.
 - Background deadline checks every five minutes and deduplicated in-app upcoming/overdue notifications.
 - React dashboard with summary metrics, case forms, deadline management, notifications, document library, semantic search, and RAG chat.
-- Automated tests for document lifecycle, retrieval, chat citations, SSE, and deadline reminders.
+- Automated tests for document lifecycle, retrieval, chat citations, SSE, deadline reminders, account isolation, and case/document sharing.
 
 ## Still outstanding
-- Per-case sharing/invitations and organization tenancy; records are isolated by account, but users cannot securely share a case with collaborators.
+- Organization tenancy and cross-organization access policies; case and document sharing grants access to individual active accounts within the same local user store.
 - Password reset, MFA, refresh-token revocation, and production audit identity.
 - OCR for scanned PDFs, email/SMS/push notifications, and calendar integrations.
 - Real-time notification push to connected browsers (current deadline notifications are persisted in-app; chat streams over SSE).
@@ -82,6 +82,7 @@ cd backend
 - `POST /api/chat/stream` — streamed RAG answer using SSE.
 - `DELETE /api/documents/{id}` — remove the stored PDF, metadata, and vector chunks.
 - `POST /api/cases`, `GET /api/cases`, `GET /api/cases/{id}`, `PATCH /api/cases/{id}` — case management.
+- `GET/POST /api/cases/{id}/shares` and `DELETE /api/cases/{id}/shares/{user_id}` — owner-controlled case sharing.
 - `POST /api/deadlines`, `GET /api/deadlines`, `PATCH /api/deadlines/{id}` — deadline management.
 - `GET /api/notifications`, `POST /api/notifications/{id}/read` — in-app notifications.
 - `POST /api/reminders/run` — run a reminder check immediately.
@@ -93,7 +94,7 @@ Defaults: 15 MB maximum upload and 500 pages per PDF. Change `MAX_UPLOAD_MB` and
 ## Local data and privacy
 By default, PDFs, SQLite metadata, and the ChromaDB index are stored under `backend/data/`, which is ignored by Git. Stored files use generated UUID filenames, not user-provided paths. Keep this folder backed up if local persistence matters. Scanned/image-only PDFs currently need OCR, which is not yet implemented.
 
-**Security limitation:** each account is isolated from other accounts' documents, search results, cases, deadlines, notifications, activity, and dashboard data. Documents can be shared with explicit read-only or indexing permission, but controlled case sharing and organization tenancy are not implemented. This remains a local-development prototype; do not expose the API publicly or upload confidential client files until case-sharing and production hardening are complete. Hosted embeddings and chat send extracted passages to the configured provider; review provider privacy and data-processing terms before confidential use. Do not commit `.env` files or API keys.
+**Security limitation:** each account is isolated from other accounts' documents, search results, cases, deadlines, notifications, activity, and dashboard data. Owners can share individual cases and documents with active accounts and revoke access; case and document sharing are not organization-level tenancy. Password reset, MFA, refresh-token revocation, external security review, and production deployment hardening are still outstanding. This remains a local-development prototype; do not expose the API publicly or upload confidential client files until production security review and operational safeguards are complete. Hosted embeddings and chat send extracted passages to the configured provider; review provider privacy and data-processing terms before confidential use. Do not commit `.env` files or API keys.
 
 ## Deadline reliability
 The application never automatically invents or saves legal deadlines. A person must confirm the date before it can be stored. Optional source document and page references are validated against uploaded documents. Reminder generation is based only on the stored, confirmed date; independently verify all legal dates and required actions.

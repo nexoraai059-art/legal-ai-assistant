@@ -97,6 +97,8 @@ async def enforce_api_auth(request: Request, call_next):
         required_roles = {"admin", "lawyer"}
     elif path == "/api/cases" and method == "POST":
         required_roles = {"admin", "lawyer"}
+    elif path.startswith("/api/cases/") and "/shares" in path and method in {"POST", "DELETE"}:
+        required_roles = {"admin", "lawyer"}
     elif path.startswith("/api/cases/") and method == "PATCH":
         required_roles = {"admin", "lawyer"}
     elif path == "/api/deadlines" and method == "POST":
@@ -140,6 +142,11 @@ class ActiveUserRequest(BaseModel):
 
 
 class ShareDocumentRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    permission: Literal["read", "write"] = "read"
+
+
+class ShareCaseRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     permission: Literal["read", "write"] = "read"
 
@@ -550,13 +557,44 @@ def legal_document_chat_stream(request: ChatRequest, http_request: Request) -> S
 def create_case(request: CreateCaseRequest, http_request: Request) -> dict[str, object]:
     if not request.title.strip():
         raise HTTPException(status_code=422, detail="Case title cannot be blank.")
-    return case_service.create_case(request.model_dump(), http_request.state.user["id"])
+    case = case_service.create_case(request.model_dump(), http_request.state.user["id"])
+    case.pop("owner_id", None)
+    return case
 
 
 @app.get("/api/cases", tags=["cases"])
 def get_cases(http_request: Request) -> dict[str, object]:
     items = case_service.list_cases(http_request.state.user["id"])
+    for item in items:
+        item.pop("owner_id", None)
     return {"items": items, "count": len(items)}
+
+
+@app.get("/api/cases/{case_id}/shares", tags=["cases"])
+def get_case_shares(case_id: str, http_request: Request) -> dict[str, object]:
+    shares = case_service.list_case_shares(case_id, http_request.state.user["id"])
+    if shares is None:
+        raise HTTPException(status_code=404, detail="Case not found or you are not its owner.")
+    return {"items": shares, "count": len(shares)}
+
+
+@app.post("/api/cases/{case_id}/shares", status_code=status.HTTP_201_CREATED, tags=["cases"])
+def create_case_share(case_id: str, request: ShareCaseRequest, http_request: Request) -> dict[str, object]:
+    try:
+        return case_service.share_case(
+            case_id, http_request.state.user["id"], request.email, request.permission
+        )
+    except ValueError as exc:
+        if str(exc).startswith("Case not found"):
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/api/cases/{case_id}/shares/{user_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["cases"])
+def delete_case_share(case_id: str, user_id: str, http_request: Request) -> None:
+    if not case_service.revoke_case_share(case_id, http_request.state.user["id"], user_id):
+        raise HTTPException(status_code=404, detail="Case share not found.")
+    return None
 
 
 @app.get("/api/cases/{case_id}", tags=["cases"])
@@ -564,14 +602,19 @@ def get_case(case_id: str, http_request: Request) -> dict[str, object]:
     case = case_service.get_case(case_id, http_request.state.user["id"])
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found.")
+    case.pop("owner_id", None)
     return case
 
 
 @app.patch("/api/cases/{case_id}", tags=["cases"])
 def update_case(case_id: str, request: CaseStatusRequest, http_request: Request) -> dict[str, object]:
-    case = case_service.update_case_status(case_id, request.status, http_request.state.user["id"])
+    try:
+        case = case_service.update_case_status(case_id, request.status, http_request.state.user["id"])
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found.")
+    case.pop("owner_id", None)
     return case
 
 
@@ -581,6 +624,8 @@ def create_deadline(request: CreateDeadlineRequest, http_request: Request) -> di
         raise HTTPException(status_code=422, detail="Deadline title cannot be blank.")
     try:
         return case_service.create_deadline(request.model_dump(), http_request.state.user["id"])
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -597,7 +642,10 @@ def get_deadlines(
 
 @app.patch("/api/deadlines/{deadline_id}", tags=["deadlines"])
 def update_deadline(deadline_id: str, request: DeadlineStatusRequest, http_request: Request) -> dict[str, object]:
-    deadline = case_service.update_deadline_status(deadline_id, request.status, http_request.state.user["id"])
+    try:
+        deadline = case_service.update_deadline_status(deadline_id, request.status, http_request.state.user["id"])
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if deadline is None:
         raise HTTPException(status_code=404, detail="Deadline not found.")
     return deadline

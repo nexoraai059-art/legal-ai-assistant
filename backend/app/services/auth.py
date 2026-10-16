@@ -181,6 +181,13 @@ def _claim_legacy_data(connection: sqlite3.Connection, owner_id: str) -> None:
         columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
         if "owner_id" in columns:
             connection.execute(f"UPDATE {table} SET owner_id = ? WHERE owner_id = 'legacy'", (owner_id,))
+    if "notifications" in tables:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(notifications)")}
+        if "recipient_id" in columns:
+            connection.execute(
+                "UPDATE notifications SET recipient_id = ? WHERE recipient_id = 'legacy' OR recipient_id IS NULL",
+                (owner_id,),
+            )
 
 
 def bootstrap_admin(*, email: str, full_name: str, password: str) -> dict[str, Any] | None:

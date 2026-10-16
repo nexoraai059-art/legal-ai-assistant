@@ -270,3 +270,10 @@ h2 { margin: 0; font: 400 clamp(30px, 4vw, 42px)/1.15 var(--serif); letter-spaci
   .share-row { align-items: flex-start; flex-direction: column; }
   .share-row-actions { width: 100%; justify-content: space-between; }
 }
+.case-share-panel { margin: 18px 0 0; padding: 18px 0 0; border: 0; border-top: 1px solid var(--line); background: transparent; }
+.case-share-panel .share-panel-heading h4 { font-size: 18px; }
+.case-share-panel .share-form { grid-template-columns: minmax(0, 1.4fr) minmax(110px, .65fr); }
+.case-share-panel .share-form .button-primary { grid-column: 1 / -1; }
+@media (max-width: 480px) {
+  .case-share-panel .share-form { grid-template-columns: 1fr; }
+}
