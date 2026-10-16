@@ -1,8 +1,7 @@
 """Local document storage and SQLite metadata for the development deployment.
 
-Uploaded files are named by UUID, never by the user-supplied filename. The data
-folder is excluded from Git. Authentication and case-level authorization must be
-added before exposing these routes to a shared or public deployment.
+Uploaded files are named by UUID, never by the user-supplied filename. Each document
+is owned by the account that uploaded it. The data folder is excluded from Git.
 """
 
 import hashlib
@@ -37,10 +36,20 @@ def initialize_storage() -> None:
                 sha256 TEXT NOT NULL,
                 page_count INTEGER NOT NULL,
                 extracted_text TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                owner_id TEXT NOT NULL DEFAULT 'legacy'
             )"""
         )
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(documents)")}
+        if "owner_id" not in columns:
+            connection.execute("ALTER TABLE documents ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'legacy'")
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "users" in tables:
+            admin = connection.execute("SELECT id FROM users WHERE role='admin' ORDER BY created_at LIMIT 1").fetchone()
+            if admin:
+                connection.execute("UPDATE documents SET owner_id = ? WHERE owner_id = 'legacy'", (admin["id"],))
         connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at DESC)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_owner_id ON documents(owner_id)")
 
 
 def insert_document(document: dict[str, Any]) -> None:
@@ -48,49 +57,57 @@ def insert_document(document: dict[str, Any]) -> None:
         connection.execute(
             """INSERT INTO documents
             (id, original_filename, stored_filename, content_type, size_bytes, sha256,
-             page_count, extracted_text, created_at)
+             page_count, extracted_text, created_at, owner_id)
             VALUES (:id, :original_filename, :stored_filename, :content_type, :size_bytes,
-                    :sha256, :page_count, :extracted_text, :created_at)""",
+                    :sha256, :page_count, :extracted_text, :created_at, :owner_id)""",
             document,
         )
 
 
-def list_documents() -> list[dict[str, Any]]:
+def list_documents(owner_id: str) -> list[dict[str, Any]]:
     with _connect() as connection:
         rows = connection.execute(
             """SELECT id, original_filename, content_type, size_bytes, sha256,
                       page_count, length(extracted_text) AS extracted_characters, created_at
-               FROM documents ORDER BY created_at DESC"""
+               FROM documents WHERE owner_id = ? ORDER BY created_at DESC""",
+            (owner_id,),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
-def get_document(document_id: str) -> dict[str, Any] | None:
+def get_document(document_id: str, owner_id: str) -> dict[str, Any] | None:
     with _connect() as connection:
         row = connection.execute(
             """SELECT id, original_filename, content_type, size_bytes, sha256,
                       page_count, extracted_text, created_at
-               FROM documents WHERE id = ?""",
-            (document_id,),
+               FROM documents WHERE id = ? AND owner_id = ?""",
+            (document_id, owner_id),
         ).fetchone()
     return dict(row) if row else None
 
 
-def delete_document(document_id: str) -> bool:
+def delete_document(document_id: str, owner_id: str) -> bool:
     with _connect() as connection:
-        row = connection.execute("SELECT stored_filename FROM documents WHERE id = ?", (document_id,)).fetchone()
+        row = connection.execute("SELECT stored_filename FROM documents WHERE id = ? AND owner_id = ?", (document_id, owner_id)).fetchone()
         if row is None:
             return False
-        connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+        connection.execute("DELETE FROM documents WHERE id = ? AND owner_id = ?", (document_id, owner_id))
     (UPLOAD_DIR / row["stored_filename"]).unlink(missing_ok=True)
     return True
 
 
-def build_document_record(*, document_id: str, original_filename: str, stored_filename: str,
+def document_owner_map() -> dict[str, str]:
+    with _connect() as connection:
+        rows = connection.execute("SELECT id, owner_id FROM documents").fetchall()
+    return {row["id"]: row["owner_id"] for row in rows}
+
+
+def build_document_record(*, document_id: str, owner_id: str, original_filename: str, stored_filename: str,
                           size_bytes: int, content: bytes, page_count: int,
                           extracted_text: str) -> dict[str, Any]:
     return {
         "id": document_id,
+        "owner_id": owner_id,
         "original_filename": original_filename,
         "stored_filename": stored_filename,
         "content_type": "application/pdf",
