@@ -310,6 +310,10 @@ export default function App() {
     if (!term) return documents;
     return documents.filter((item) => item.original_filename.toLowerCase().includes(term));
   }, [documents, search]);
+  const unindexedDocuments = useMemo(
+    () => documents.filter((item) => !item.indexed && item.access_level !== "read"),
+    [documents],
+  );
 
   const canManageCases = Boolean(authUser && ["admin", "lawyer"].includes(authUser.role));
   const canUploadDocuments = Boolean(authUser && ["admin", "lawyer", "assistant"].includes(authUser.role));
@@ -640,6 +644,24 @@ export default function App() {
       await loadCaseData();
       const detailResponse = await apiFetch(`${API_BASE}/api/documents/${created.id}`);
       if (detailResponse.ok) setSelected(await detailResponse.json());
+
+      // Index text-bearing PDFs immediately so the retrieval workspace is ready after upload.
+      // Keep upload successful if the embedding provider is temporarily unavailable; manual retry remains available.
+      if (created.text_extracted) {
+        setBusyIndex(created.id);
+        setNotice(`Uploaded ${created.filename}. Creating searchable chunks and embeddings…`);
+        try {
+          const indexResponse = await apiFetch(`${API_BASE}/api/documents/${created.id}/index`, { method: "POST" });
+          if (!indexResponse.ok) throw new Error(await readApiError(indexResponse));
+          const indexed = await indexResponse.json();
+          setNotice(`Uploaded and indexed ${created.filename}: ${indexed.chunks_indexed} searchable chunks created.`);
+          await loadDocuments();
+        } catch (indexError) {
+          setError(`Uploaded ${created.filename}, but indexing failed: ${indexError.message} Use Index in Stored documents to retry.`);
+        } finally {
+          setBusyIndex("");
+        }
+      }
     } catch (err) {
       setError(err.message || "Upload failed. Please try again.");
     } finally {
@@ -915,6 +937,10 @@ export default function App() {
 
         <section className="semantic-panel">
           <div className="semantic-heading"><div><p className="eyebrow">RETRIEVAL WORKSPACE</p><h3>Search across your documents</h3><p>Ask a question in natural language to find related passages and page references.</p></div><span className="semantic-mark">⌕</span></div>
+          {unindexedDocuments.length > 0 && <div className="search-message" role="status">
+            <p>{unindexedDocuments.length === 1 ? "One document needs indexing before it can be searched." : `${unindexedDocuments.length} documents need indexing before they can be searched.`}</p>
+            <div className="row-actions">{unindexedDocuments.map((item) => <button className="index-button" key={item.id} onClick={() => indexDocument(item)} disabled={busyIndex === item.id}>{busyIndex === item.id ? "Indexing…" : `Index ${item.original_filename}`}</button>)}</div>
+          </div>}
           <form className="semantic-form" onSubmit={runSemanticSearch}>
             <input value={semanticQuery} onChange={(event) => setSemanticQuery(event.target.value)} minLength={3} maxLength={1000} required placeholder="e.g. What does the contract say about termination notice?" aria-label="Semantic search query" />
             <button className="button-primary" type="submit" disabled={searching || semanticQuery.trim().length < 3}>{searching ? <><span className="spinner" /> Searching…</> : "Find passages ↗"}</button>
@@ -972,15 +998,5 @@ export default function App() {
               {sharesLoading ? <p className="subtle-copy">Loading access list…</p> : documentShares.length === 0 ? <p className="subtle-copy">This document is private to your account.</p> : documentShares.map((item) => <article className="share-row" key={item.user_id}>
                 <div><strong>{item.full_name}</strong><small>{item.email}</small></div>
                 <div className="share-row-actions"><span className={"status-pill " + (item.permission === "write" ? "status-active" : "status-archived")}>{item.permission === "write" ? "Can index" : "Read only"}</span><button className="read-button" type="button" onClick={() => revokeDocumentShare(item)} disabled={busyShareRevoke === item.user_id}>{busyShareRevoke === item.user_id ? "Revoking…" : "Revoke"}</button></div>
-              </article>)}
-            </div>
-            <p className="share-note">Read-only users can preview and search this document. “Can index” also permits indexing; only the owner can delete the file or change sharing.</p>
-          </section>}
-          <div className="extracted-text">{selected.extracted_text ? selected.extracted_text : "No selectable text was found in this PDF. It may be a scanned document; OCR support has not been added yet."}</div>
-        </section>}
-      </section>
 
-      <footer className="footer"><span>LEGAL AI ASSISTANT</span><span>Case sharing is available; production security review and operational hardening are still required.</span></footer>
-    </main>
-  );
-}
+[executed on device: NIDHIN (47c41d4b-ef60-4c09-8668-4cc72e1eff30)]
