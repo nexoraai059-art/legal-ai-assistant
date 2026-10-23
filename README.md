@@ -115,8 +115,8 @@ legal-ai-assistant/
 - PDF extraction: PyMuPDF
 - Metadata and case tracking: SQLite
 - Vector retrieval: ChromaDB with cosine similarity
-- Embeddings: OpenAI-compatible hosted embeddings API (default `text-embedding-3-small`)
-- RAG orchestration: LangChain + OpenAI-compatible chat model
+- Embeddings: OpenAI-compatible hosted embeddings API (template default `nvidia/nemotron-3-embed-1b`; provider/model are configurable)
+- RAG orchestration: LangChain + OpenAI-compatible chat model (template default `openai/gpt-oss-20b` via NVIDIA API)
 - Streaming: Server-Sent Events (SSE)
 
 ## Implemented
