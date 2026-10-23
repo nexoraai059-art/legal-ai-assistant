@@ -2,6 +2,113 @@
 
 A local-first workspace for managing legal documents, retrieving relevant passages, asking source-grounded questions, tracking cases, and generating in-app deadline notifications.
 
+## Repository structure
+
+The repository is organized into a React frontend, a FastAPI backend, local application data, public benchmark samples, and helper scripts.
+
+```text
+legal-ai-assistant/
+|
+|-- backend/                         # Python API and AI/document services
+|   |-- app/
+|   |   |-- main.py                  # FastAPI application and API routes
+|   |   |-- core/
+|   |   |   `-- config.py            # Environment-based configuration
+|   |   `-- services/
+|   |       |-- auth.py              # Login, sessions, roles, access checks
+|   |       |-- cases.py             # Cases, deadlines, notifications, activity
+|   |       |-- chat.py              # Retrieval-grounded AI chat and citations
+|   |       |-- chunking.py          # Page-aware text chunking
+|   |       |-- documents.py          # PDF metadata, storage, indexing workflow
+|   |       |-- embeddings.py         # Embedding-provider client
+|   |       |-- pdf_processing.py     # PDF text extraction and optional OCR
+|   |       `-- vector_store.py       # Persistent ChromaDB retrieval
+|   |
+|   |-- data/                        # Local runtime data; intentionally not in Git
+|   |   |-- documents/                # Uploaded PDFs with generated filenames
+|   |   |-- chroma/                   # Persistent vector index
+|   |   `-- legal_ai.sqlite3          # Local account/case/document metadata
+|   |
+|   |-- tests/                       # Automated backend tests
+|   |   |-- test_backup.py
+|   |   |-- test_chat.py
+|   |   |-- test_documents.py
+|   |   |-- test_embeddings.py
+|   |   `-- test_pdf_processing.py
+|   |
+|   |-- .venv/                       # Local Python environment; do not commit
+|   |-- .env                         # Private API keys/settings; do not commit
+|   |-- .env.example                # Safe configuration template
+|   `-- requirements.txt            # Python dependencies
+|
+|-- frontend/                       # React + Vite browser interface
+|   |-- src/
+|   |   |-- App.jsx                 # Main dashboard and user workflows
+|   |   |-- main.jsx                # React entry point
+|   |   `-- styles.css              # UI styling
+|   |-- dist/                       # Generated build output; do not commit
+|   |-- node_modules/                # Installed packages; do not commit
+|   |-- index.html                  # Browser entry HTML
+|   |-- package.json                # Scripts and frontend dependencies
+|   |-- package-lock.json           # Reproducible npm dependency lockfile
+|   `-- vite.config.js               # Vite development/build configuration
+|
+|-- datasets/                       # Small public legal benchmark samples
+|   |-- generated/
+|   |   |-- BillSum_legislative_bill_summarization.jsonl
+|   |   |-- CUAD_Contract_Understanding_Atticus_Dataset.jsonl
+|   |   |-- LegalBench-RAG.jsonl
+|   |   |-- LexGLUE_CaseHOLD.jsonl
+|   |   |-- LexGLUE_ECtHR_Article_Classification_A.jsonl
+|   |   |-- LexGLUE_ECtHR_Article_Classification_B.jsonl
+|   |   |-- LexGLUE_EURLEX.jsonl
+|   |   |-- LexGLUE_LEDGAR.jsonl
+|   |   |-- LexGLUE_SCOTUS.jsonl
+|   |   `-- LexGLUE_Unfair_ToS.jsonl
+|   |-- manifest.json               # Dataset identifiers/configuration notes
+|   `-- README.md                   # Sample generation, workflow, license cautions
+|
+|-- scripts/
+|   |-- download_legal_datasets.py  # Bounded benchmark-sample downloader
+|   `-- live_monitor.ps1            # Local development/process monitor
+|
+|-- .github/workflows/              # CI and dataset workflow definitions
+|-- .gitignore                      # Excludes secrets, local data and build files
+`-- README.md                       # Main project guide (this file)
+```
+
+> **Important:** The tree documents the source layout. `backend/data/`, `.env` files, `.venv/`, `node_modules/`, and generated frontend build output are local runtime/configuration artifacts and should not be uploaded. The `datasets/generated/` directory contains benchmark samples, not private case files; review each upstream dataset's current license and terms before reuse.
+
+### Folder and file guide
+
+| Path | Purpose |
+|---|---|
+| `frontend/src/` | React screens for the dashboard, document library, search, chat, cases, deadlines, and notifications. |
+| `backend/app/main.py` | Creates the FastAPI application and exposes the HTTP/SSE API. |
+| `backend/app/services/auth.py` | Authentication, session handling, role checks, and account access controls. |
+| `backend/app/services/pdf_processing.py` | Extracts selectable PDF text and optionally OCR-processes scanned pages when configured. |
+| `backend/app/services/chunking.py` | Divides extracted text into overlapping chunks while retaining page context. |
+| `backend/app/services/embeddings.py` | Requests vector embeddings from the configured compatible API provider. |
+| `backend/app/services/vector_store.py` | Persists and retrieves vectors using ChromaDB. |
+| `backend/app/services/chat.py` | Retrieves evidence for a question and creates a source-grounded answer. |
+| `backend/app/services/cases.py` | Case records, user-confirmed deadlines, reminders, notifications, and activity. |
+| `backend/data/` | Local documents, SQLite records, and vector index. Excluded from version control. |
+| `backend/tests/` | Regression checks for document processing, retrieval/chat, embeddings, and backups. |
+| `backend/.env.example` | Safe starting template; copy to `.env` and add your own secrets locally. |
+| `datasets/` | Small benchmark/evaluation samples; these are not automatically used by runtime chat unless code explicitly loads them. |
+| `scripts/` | Helper automation for dataset sample generation and local monitoring. |
+| `.github/workflows/` | GitHub Actions automation, including tests/build and optional benchmark sample generation. |
+
+### Request lifecycle: from PDF to cited answer
+
+1. **Upload:** The React frontend sends a PDF to the FastAPI backend.
+2. **Validate and extract:** The backend validates the file and extracts text with page information; optional OCR can handle scanned pages when enabled and installed.
+3. **Chunk and embed:** Text is split into page-aware chunks, then sent to the configured embedding provider.
+4. **Index:** Vectors and metadata are stored in ChromaDB; document metadata is maintained in SQLite.
+5. **Ask:** A user's question is embedded and matched against permitted, indexed document passages.
+6. **Generate:** The chat service passes retrieved evidence to the configured LLM and streams the response over Server-Sent Events (SSE).
+7. **Verify:** The UI displays source labels/page metadata when available. Users must open and verify the underlying passage; generated answers are not guaranteed correct.
+
 ## Stack
 - Frontend: React + Vite
 - Backend: Python + FastAPI
@@ -72,24 +179,24 @@ cd backend
 ```
 
 ## API endpoints
-- `GET /api/auth/bootstrap/status`, `POST /api/auth/bootstrap` — one-time first-admin setup.
-- `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me` — sign in, revoke the current session, and inspect the current account.
-- `GET /api/auth/users`, `POST /api/auth/users`, `PATCH /api/auth/users/{id}/active` — admin account management.
-- `POST /api/documents` — multipart PDF upload; form field `file`.
-- `GET /api/documents/{id}/shares`, `POST /api/documents/{id}/shares`, `DELETE /api/documents/{id}/shares/{user_id}` — owner-managed document sharing.
-- `GET /api/documents` and `GET /api/documents/{id}` — document metadata and extracted text.
-- `POST /api/documents/{id}/index` — chunk, embed, and index a document.
-- `POST /api/search` — semantic search; JSON body `{"query":"...","limit":5}`.
-- `POST /api/chat` — grounded answer with source metadata.
-- `POST /api/chat/stream` — streamed RAG answer using SSE.
-- `DELETE /api/documents/{id}` — remove the stored PDF, metadata, and vector chunks.
-- `POST /api/cases`, `GET /api/cases`, `GET /api/cases/{id}`, `PATCH /api/cases/{id}` — case management.
-- `GET/POST /api/cases/{id}/shares` and `DELETE /api/cases/{id}/shares/{user_id}` — owner-controlled case sharing.
-- `POST /api/deadlines`, `GET /api/deadlines`, `PATCH /api/deadlines/{id}` — deadline management.
-- `GET /api/notifications`, `GET /api/notifications/stream`, `POST /api/notifications/{id}/read` — in-app notifications and real-time SSE updates.
-- `POST /api/reminders/run` — run a reminder check immediately.
-- `GET /api/activity` — recent activity log.
-- `GET /api/dashboard/summary` — case/document/deadline summary counts.
+- `GET /api/auth/bootstrap/status`, `POST /api/auth/bootstrap` â€” one-time first-admin setup.
+- `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me` â€” sign in, revoke the current session, and inspect the current account.
+- `GET /api/auth/users`, `POST /api/auth/users`, `PATCH /api/auth/users/{id}/active` â€” admin account management.
+- `POST /api/documents` â€” multipart PDF upload; form field `file`.
+- `GET /api/documents/{id}/shares`, `POST /api/documents/{id}/shares`, `DELETE /api/documents/{id}/shares/{user_id}` â€” owner-managed document sharing.
+- `GET /api/documents` and `GET /api/documents/{id}` â€” document metadata and extracted text.
+- `POST /api/documents/{id}/index` â€” chunk, embed, and index a document.
+- `POST /api/search` â€” semantic search; JSON body `{"query":"...","limit":5}`.
+- `POST /api/chat` â€” grounded answer with source metadata.
+- `POST /api/chat/stream` â€” streamed RAG answer using SSE.
+- `DELETE /api/documents/{id}` â€” remove the stored PDF, metadata, and vector chunks.
+- `POST /api/cases`, `GET /api/cases`, `GET /api/cases/{id}`, `PATCH /api/cases/{id}` â€” case management.
+- `GET/POST /api/cases/{id}/shares` and `DELETE /api/cases/{id}/shares/{user_id}` â€” owner-controlled case sharing.
+- `POST /api/deadlines`, `GET /api/deadlines`, `PATCH /api/deadlines/{id}` â€” deadline management.
+- `GET /api/notifications`, `GET /api/notifications/stream`, `POST /api/notifications/{id}/read` â€” in-app notifications and real-time SSE updates.
+- `POST /api/reminders/run` â€” run a reminder check immediately.
+- `GET /api/activity` â€” recent activity log.
+- `GET /api/dashboard/summary` â€” case/document/deadline summary counts.
 
 Defaults: 15 MB maximum upload and 500 pages per PDF. Change `MAX_UPLOAD_MB` and `MAX_PDF_PAGES` in the backend environment.
 
@@ -138,3 +245,5 @@ The chat is instructed to answer only from retrieved excerpts, cite source label
 
 ## Dataset samples
 Benchmark samples are stored under `datasets/generated/`. Review each dataset's licence and terms before training, redistribution, or production use. These benchmark samples are not a store for private case documents.
+
+[executed on device: NIDHIN (47c41d4b-ef60-4c09-8668-4cc72e1eff30)]
