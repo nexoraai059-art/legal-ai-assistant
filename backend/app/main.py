@@ -473,7 +473,7 @@ def semantic_search(request: SearchRequest, http_request: Request) -> dict[str, 
     if vector_store.indexed_chunk_count(document_ids=document_ids) == 0:
         return {"query": request.query, "items": [], "count": 0, "message": "No indexed document chunks yet. Index a PDF first."}
     try:
-        query_vector = embeddings.embed_texts([request.query])[0]
+        query_vector = embeddings.embed_texts([request.query], input_type="query")[0]
     except (embeddings.EmbeddingConfigurationError, embeddings.EmbeddingProviderError) as exc:
         raise _embedding_error(exc) from exc
     results = vector_store.search_chunks(query_vector, limit=request.limit, document_ids=document_ids)
@@ -492,7 +492,7 @@ def legal_document_chat(request: ChatRequest, http_request: Request) -> dict[str
             "message": "No indexed documents are available.",
         }
     try:
-        query_vector = embeddings.embed_texts([request.question])[0]
+        query_vector = embeddings.embed_texts([request.question], input_type="query")[0]
     except (embeddings.EmbeddingConfigurationError, embeddings.EmbeddingProviderError) as exc:
         raise _embedding_error(exc) from exc
 
@@ -543,7 +543,7 @@ def legal_document_chat_stream(request: ChatRequest, http_request: Request) -> S
     if vector_store.indexed_chunk_count(document_ids=document_ids) == 0:
         raise HTTPException(status_code=409, detail="Index a document before asking questions.")
     try:
-        query_vector = embeddings.embed_texts([request.question])[0]
+        query_vector = embeddings.embed_texts([request.question], input_type="query")[0]
     except (embeddings.EmbeddingConfigurationError, embeddings.EmbeddingProviderError) as exc:
         raise _embedding_error(exc) from exc
     retrieved = vector_store.search_chunks(query_vector, limit=request.limit, document_ids=document_ids)
@@ -770,3 +770,5 @@ def document_delete(document_id: str, http_request: Request) -> None:
     if not document_store.delete_document(document_id, owner_id):
         raise HTTPException(status_code=404, detail="Document not found.")
     return None
+
+[executed on device: NIDHIN (47c41d4b-ef60-4c09-8668-4cc72e1eff30)]
