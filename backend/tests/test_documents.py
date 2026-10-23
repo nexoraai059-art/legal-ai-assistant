@@ -122,7 +122,7 @@ def test_index_search_and_delete_vector_chunks(client, monkeypatch):
     assert upload.status_code == 201
     document_id = upload.json()["id"]
 
-    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts, **kwargs: [[1.0, 0.0] for _ in texts])
     indexed = client.post(f"/api/documents/{document_id}/index")
     assert indexed.status_code == 200, indexed.text
     assert indexed.json()["chunks_indexed"] >= 1
@@ -148,7 +148,7 @@ def test_index_reports_missing_embedding_configuration(client, monkeypatch):
     )
     document_id = upload.json()["id"]
     monkeypatch.setattr(config.settings, "embedding_api_key", "")
-    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: (_ for _ in ()).throw(
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts, **kwargs: (_ for _ in ()).throw(
         main.embeddings.EmbeddingConfigurationError("Semantic search is not configured yet.")
     ))
     response = client.post(f"/api/documents/{document_id}/index")
@@ -162,7 +162,7 @@ def test_chat_returns_answer_with_document_page_sources(client, monkeypatch):
     )
     document_id = upload.json()["id"]
     monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None, document_ids=None: 1)
-    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts, **kwargs: [[1.0, 0.0] for _ in texts])
     monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None, document_ids=None: [{
         "document_id": document_id,
         "filename": "agreement.pdf",
@@ -185,7 +185,7 @@ def test_chat_returns_answer_with_document_page_sources(client, monkeypatch):
 
 def test_chat_requires_llm_configuration(client, monkeypatch):
     monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None, document_ids=None: 1)
-    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts, **kwargs: [[1.0, 0.0] for _ in texts])
     monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None, document_ids=None: [{
         "document_id": "doc-1", "filename": "agreement.pdf", "page_start": 1,
         "page_end": 1, "chunk_index": 0, "score": 0.8, "text": "[Page 1] notice terms",
@@ -208,7 +208,7 @@ def test_chat_removes_unknown_source_labels():
 
 def test_chat_stream_sends_sse_source_token_and_done_events(client, monkeypatch):
     monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None, document_ids=None: 1)
-    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts, **kwargs: [[1.0, 0.0] for _ in texts])
     monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None, document_ids=None: [{
         "document_id": "doc-1", "filename": "notice.pdf", "page_start": 2,
         "page_end": 2, "chunk_index": 0, "score": 0.9, "text": "[Page 2] Written notice is required.",
@@ -228,7 +228,7 @@ def test_chat_stream_sends_sse_source_token_and_done_events(client, monkeypatch)
 
 def test_chat_stream_rejects_missing_llm_configuration_before_streaming(client, monkeypatch):
     monkeypatch.setattr(vector_store, "indexed_chunk_count", lambda owner_id=None, document_ids=None: 1)
-    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts, **kwargs: [[1.0, 0.0] for _ in texts])
     monkeypatch.setattr(vector_store, "search_chunks", lambda query_embedding, limit, owner_id=None, document_ids=None: [{
         "document_id": "doc-1", "filename": "notice.pdf", "page_start": 1,
         "page_end": 1, "chunk_index": 0, "score": 0.9, "text": "[Page 1] Notice terms.",
@@ -382,7 +382,7 @@ def test_admin_cannot_disable_the_only_active_admin(client):
     assert response.status_code == 400
 
 def test_users_only_access_their_own_case_and_document_data(client, monkeypatch):
-    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts, **kwargs: [[1.0, 0.0] for _ in texts])
     admin_user = client.get("/api/auth/me").json()
     admin_id = admin_user["id"]
     admin_authorization = client.headers["Authorization"]
@@ -534,7 +534,7 @@ def test_login_rate_limits_repeated_failed_attempts(client):
     assert int(blocked.headers["retry-after"]) > 0
 
 def test_document_sharing_permissions_search_and_revocation(client, monkeypatch):
-    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts: [[1.0, 0.0] for _ in texts])
+    monkeypatch.setattr(main.embeddings, "embed_texts", lambda texts, **kwargs: [[1.0, 0.0] for _ in texts])
     owner_authorization = client.headers["Authorization"]
     upload = client.post(
         "/api/documents",
@@ -834,3 +834,5 @@ def test_scanned_pdf_without_ocr_does_not_create_fake_page_text(client, monkeypa
     indexed = client.post(f"/api/documents/{created['id']}/index")
     assert indexed.status_code == 422
     assert "OCR_ENABLED" in indexed.json()["detail"]
+
+[executed on device: NIDHIN (47c41d4b-ef60-4c09-8668-4cc72e1eff30)]
