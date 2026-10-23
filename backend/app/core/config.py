@@ -16,11 +16,11 @@ class Settings(BaseSettings):
     login_rate_limit_attempts: int = 10
     login_rate_limit_window_minutes: int = 15
     llm_api_key: str = ""
-    llm_api_base_url: str = "https://api.openai.com/v1"
-    llm_model: str = ""
+    llm_api_base_url: str = "https://integrate.api.nvidia.com/v1"
+    llm_model: str = "openai/gpt-oss-20b"
     embedding_api_key: str = ""
-    embedding_api_base_url: str = "https://api.openai.com/v1"
-    embedding_model: str = "text-embedding-3-small"
+    embedding_api_base_url: str = "https://integrate.api.nvidia.com/v1"
+    embedding_model: str = "nvidia/nemotron-3-embed-1b"
     data_dir: Path = BACKEND_DIR / "data"
     max_upload_mb: int = 15
     max_pdf_pages: int = 500
@@ -33,3 +33,5 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+[executed on device: NIDHIN (47c41d4b-ef60-4c09-8668-4cc72e1eff30)]
